@@ -158,7 +158,22 @@ export async function onDragDrop(handler: (e: DragDropPayload) => void) {
   });
 }
 
+/**
+ * Outside Tauri, events travel on this in-page bus instead, so the dev preview
+ * (dev/island-preview.html) can replay hook and integration traffic through the
+ * very same handlers. Inside the app nothing ever dispatches on it.
+ */
+const devBus = new EventTarget();
+
+export function devEmit(name: string, payload: unknown) {
+  devBus.dispatchEvent(new CustomEvent(name, { detail: payload }));
+}
+
 export async function onEvent<T>(name: string, handler: (payload: T) => void) {
-  if (!IS_TAURI) return () => {};
+  if (!IS_TAURI) {
+    const fn = (e: Event) => handler((e as CustomEvent<T>).detail);
+    devBus.addEventListener(name, fn);
+    return () => devBus.removeEventListener(name, fn);
+  }
   return listen<T>(name, (e) => handler(e.payload));
 }

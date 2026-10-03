@@ -5,7 +5,9 @@
 // action the spec asks for: ask a question about it.
 
 import { h, clear } from "./dom";
+import { LINE } from "./icons";
 import { State } from "../core/state";
+import { button, icon, stagger } from "./ui";
 import type { ViewActions, ViewHost } from "./views";
 
 /** Dashed rounded rect drawn as SVG so the dashes can march like on macOS. */
@@ -35,11 +37,12 @@ export function buildUpload(): ViewHost {
     { class: "drop-tags" },
     ...["PDF", "Images", "Code", "Docs"].map((t) => h("span", { text: t })),
   );
+  const glyph = h("span", { class: "drop-glyph" }, icon(LINE.upload, 15, 2));
   const card = h(
     "div",
     { class: "card drop-card" },
     frame,
-    h("div", { class: "drop-body" }, title, tags),
+    stagger(h("div", { class: "drop-body" }, h("div", { class: "drop-title-row" }, glyph, title), tags)),
   );
   const el = h("div", { class: "view" }, card);
 
@@ -47,6 +50,7 @@ export function buildUpload(): ViewHost {
     el,
     sync() {
       card.classList.toggle("over", State.fileDragOver);
+      title.textContent = State.fileDragOver ? "Let go — I'll take it" : "Drop your files here";
     },
   };
 }
@@ -89,24 +93,16 @@ export function buildChoose(actions: ViewActions): ViewHost {
   const row = h(
     "div",
     { class: "actions" },
-    h("button", {
-      class: "btn primary",
-      text: "Ask a question",
-      onclick: () => actions.setView("prompt"),
-    }),
-    h("button", {
-      class: "btn secondary",
-      text: "Cancel",
-      onclick: () => actions.setView(State.defaultView()),
-    }),
+    button("Ask a question", "primary", () => actions.setView("prompt"), { icon: LINE.sparkle }),
+    button("Cancel", "secondary", () => actions.setView(State.defaultView())),
   );
   const el = h(
     "div",
     { class: "view" },
     h(
       "div",
-      { class: "card" },
-      h("div", { class: "stack", style: "padding:0 18px 0 98px" }, title, sub, row),
+      { class: "card wash", style: "--wash:rgba(52,211,153,0.32)" },
+      stagger(h("div", { class: "stack", style: "padding:0 18px 0 98px" }, title, sub, row)),
     ),
   );
 

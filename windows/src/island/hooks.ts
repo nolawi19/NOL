@@ -5,7 +5,8 @@
 
 import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { STATE_COLOR, toolVerb } from "../core/activity";
+import { State, type AgentTask } from "../core/state";
 import type { Island } from "./island";
 
 const CLAUDE_ID = "integration_claude";
@@ -60,36 +61,32 @@ function lastPathComponent(p: string): string {
   return idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
 }
 
-/** frenchStep() — same labels as the macOS app. */
-const TOOL_LABELS: Record<string, string> = {
-  Bash: "Exécute",
-  Read: "Lit",
-  Write: "Écrit",
-  Edit: "Modifie",
-  Glob: "Cherche",
-  Grep: "Recherche",
-  WebSearch: "Recherche web",
-  WebFetch: "Récupère",
-  TodoWrite: "Tâches",
-  Task: "Agent",
-  LS: "Liste",
-  MultiEdit: "Modifie",
-  NotebookEdit: "Notebook",
-  PowerShell: "Exécute",
-};
-
+/**
+ * Ticker line for a tool call: "Run · npm test", "Edit · invoice.ts". The verb
+ * is what activity.ts parses back into a kind, so every surface agrees on what
+ * Claude is doing. (The macOS build shows French verbs; this build is English
+ * throughout.)
+ */
 function stepLabel(tool: string, input: Record<string, unknown>): string {
-  const label = TOOL_LABELS[tool] ?? tool;
+  const label = toolVerb(tool);
   const str = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : null);
   const cmd = str("command");
-  if (cmd) return `${label} · ${cmd.slice(0, 40)}`;
+  if (cmd) return `${label} · ${oneLine(cmd).slice(0, 60)}`;
   const path = str("path");
   if (path) return `${label} · ${lastPathComponent(path)}`;
-  const file = str("file_path");
+  const file = str("file_path") ?? str("notebook_path");
   if (file) return `${label} · ${lastPathComponent(file)}`;
-  const query = str("query");
-  if (query) return `${label} · ${query.slice(0, 40)}`;
+  const url = str("url");
+  if (url) return `${label} · ${url.replace(/^https?:\/\//, "").slice(0, 60)}`;
+  const query = str("query") ?? str("pattern");
+  if (query) return `${label} · ${oneLine(query).slice(0, 60)}`;
+  const description = str("description");
+  if (description) return `${label} · ${oneLine(description).slice(0, 60)}`;
   return label;
+}
+
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 /**
@@ -110,15 +107,16 @@ const APPROVAL_FIELDS = [
   "prompt", // Task
 ] as const;
 
-function approvalTarget(tool: string, input: Record<string, unknown>): string {
+function approvalTarget(input: Record<string, unknown>): string {
   for (const field of APPROVAL_FIELDS) {
     const value = input[field];
-    if (typeof value === "string" && value.trim()) {
-      return `${tool} · ${value.trim()}`;
-    }
+    if (typeof value === "string" && value.trim()) return value.trim();
   }
-  return tool;
+  return "";
 }
+
+/** Coucou answers within this long or not at all (see pipe.rs DECISION_TIMEOUT). */
+const APPROVAL_TIMEOUT_MS = 110_000;
 
 function upsert(projectName: string, cwd: string) {
   const t = State.tasks.find((x) => x.id === CLAUDE_ID);
@@ -134,6 +132,19 @@ function clearSession() {
   t.stepIndex = 0;
   t.name = "VS Code";
   t.pillBadge = null;
+  t.sessionStart = null;
+  t.turnStart = null;
+  t.toolCount = 0;
+}
+
+function taskById(id: string): AgentTask | undefined {
+  return State.tasks.find((t) => t.id === id);
+}
+
+/** Starts the session clock the first time we hear from a session. */
+function touchSession(id: string) {
+  const t = taskById(id);
+  if (t && !t.sessionStart) t.sessionStart = Date.now();
 }
 
 export function registerHookHandlers(island: Island) {
@@ -185,12 +196,21 @@ function handleHook(island: Island, payload: HookPayload) {
   switch (name) {
     case "SessionStart":
       ensurePill();
+      touchSession(agentId);
       surface("overview", false);
       Sound.play("work");
       break;
 
     case "UserPromptSubmit": {
       ensurePill();
+      touchSession(agentId);
+      {
+        const t = taskById(agentId);
+        if (t) {
+          t.turnStart = Date.now();
+          t.toolCount = 0;
+        }
+      }
       State.updateTask(agentId, "thinking");
       // The field is `prompt`; reading `message` meant this step was always blank.
       const asked = payload.prompt ?? payload.message;
@@ -201,6 +221,11 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "PreToolUse": {
       ensurePill();
+      touchSession(agentId);
+      {
+        const t = taskById(agentId);
+        if (t) t.toolCount = (t.toolCount ?? 0) + 1;
+      }
       State.updateTask(agentId, "working");
       const tool = payload.tool_name ?? "Tool";
       State.appendStep(agentId, stepLabel(tool, payload.tool_input ?? {}));
@@ -223,7 +248,7 @@ function handleHook(island: Island, payload: HookPayload) {
       if (lower.includes("rate limit") || lower.includes("limite d")) {
         State.updateTask(agentId, "ratelimit");
         Sound.play("rate");
-      } else if (message.endsWith("?")) {
+      } else if (message.trim().endsWith("?")) {
         State.updateTask(agentId, "question");
         State.appendStep(agentId, message);
       }
@@ -235,7 +260,10 @@ function handleHook(island: Island, payload: HookPayload) {
       if (payload.message) State.appendStep(agentId, payload.message.slice(0, 60));
       Sound.play("finish");
       if (focused) surface("finished", true);
-      else State.setPillBadge(agentId, "finished");
+      else {
+        State.setPillBadge(agentId, "finished");
+        State.showFlash(`${taskById(agentId)?.name ?? "Session"} · finished`, STATE_COLOR.finished, "success");
+      }
       window.setTimeout(() => {
         if (isExternalAgent) {
           State.removeTask(agentId);
@@ -250,7 +278,10 @@ function handleHook(island: Island, payload: HookPayload) {
       State.updateTask(agentId, "error");
       Sound.play("error");
       if (focused) surface("error", true);
-      else State.setPillBadge(agentId, "error");
+      else {
+        State.setPillBadge(agentId, "error");
+        State.showFlash(`${taskById(agentId)?.name ?? "Session"} · stopped on an error`, STATE_COLOR.error, "error");
+      }
       break;
 
     case "SessionEnd":
@@ -291,12 +322,17 @@ function handleHook(island: Island, payload: HookPayload) {
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};
+      const target = approvalTarget(input);
       State.pendingApproval = {
         requestId,
         sessionId: payload.session_id ?? "",
         tool,
-        command: approvalTarget(tool, input),
+        command: target ? `${tool} · ${target}` : tool,
+        target,
+        receivedAt: Date.now(),
+        timeoutMs: APPROVAL_TIMEOUT_MS,
       };
+      State.detailExpanded = false;
       // The relay's short ack window closes in 800 ms; everything below this
       // line is synchronous, so the card really is up by the time it lands.
       if (requestId) void Bridge.approvalAck(requestId);
@@ -324,7 +360,7 @@ function handleHook(island: Island, payload: HookPayload) {
         State.setPillBadge(CLAUDE_ID, null);
         if (State.view === "approval") island.setView(State.defaultView());
         State.notify();
-      }, 110_000);
+      }, APPROVAL_TIMEOUT_MS);
       break;
     }
 

@@ -1,0 +1,262 @@
+/* Coucou design system — the one set of tokens the island and the settings
+   window are both built from. Components never invent a colour, a radius, a
+   duration or an easing: they pick one from here.
+
+   Layering, darkest to lightest:
+     bg-0  the island body (true black, so it melts into the screen edge)
+     bg-1  window background
+     bg-2  sunken wells (code, diff, inputs)
+     bg-3  raised cards
+     glass-1…4  translucent fills stacked on top of any of the above        */
+
+:root {
+  color-scheme: dark;
+
+  /* ── Type ─────────────────────────────────────────────────────────────── */
+  --font: "Segoe UI Variable Text", "Segoe UI Variable", system-ui, "Segoe UI", "Inter",
+    "Cantarell", "Ubuntu", sans-serif, "Segoe UI Emoji";
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable", system-ui, "Segoe UI",
+    "Inter", sans-serif;
+  --mono: "Cascadia Code", "Cascadia Mono", "Consolas", "JetBrains Mono", ui-monospace, monospace;
+
+  --fs-3xs: 9.5px;
+  --fs-2xs: 10px;
+  --fs-xs: 10.5px;
+  --fs-sm: 11.5px;
+  --fs-base: 12.5px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  --lh-tight: 1.2;
+  --lh-base: 1.45;
+  --tracking-tight: -0.01em;
+  --tracking-caps: 0.06em;
+
+  /* ── Spacing (4 pt grid, with a 2 pt half-step) ───────────────────────── */
+  --sp-1: 2px;
+  --sp-2: 4px;
+  --sp-3: 6px;
+  --sp-4: 8px;
+  --sp-5: 12px;
+  --sp-6: 16px;
+  --sp-7: 20px;
+  --sp-8: 24px;
+  --sp-9: 32px;
+  --sp-10: 40px;
+
+  /* ── Radii ────────────────────────────────────────────────────────────── */
+  --r-xs: 5px;
+  --r-sm: 8px;
+  --r-md: 11px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-2xl: 24px;
+  --r-pill: 999px;
+
+  /* ── Ink ──────────────────────────────────────────────────────────────── */
+  --ink-1: #f5f6f8;
+  --ink-2: #d6d9de;
+  --ink-3: #9a9fa8;
+  --ink-4: #6d727b;
+  --ink-5: #4a4e56;
+  --ink-inverse: #0a0b0d;
+
+  /* ── Surfaces ─────────────────────────────────────────────────────────── */
+  --bg-0: #000000;
+  --bg-1: #08090b;
+  --bg-2: #0c0d10;
+  --bg-3: #131418;
+  --bg-4: #1a1b20;
+
+  --glass-1: rgba(255, 255, 255, 0.03);
+  --glass-2: rgba(255, 255, 255, 0.055);
+  --glass-3: rgba(255, 255, 255, 0.085);
+  --glass-4: rgba(255, 255, 255, 0.13);
+  --glass-5: rgba(255, 255, 255, 0.19);
+
+  --line-1: rgba(255, 255, 255, 0.045);
+  --line-2: rgba(255, 255, 255, 0.075);
+  --line-3: rgba(255, 255, 255, 0.12);
+  --line-4: rgba(255, 255, 255, 0.22);
+
+  /* Top-edge light catch that makes a surface read as raised glass. */
+  --highlight: inset 0 1px 0 rgba(255, 255, 255, 0.055);
+  --highlight-strong: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+
+  /* ── Status palette (shared with Mochi's state colours) ──────────────── */
+  --c-work: #3b9eff;
+  --c-think: #a78bfa;
+  --c-search: #6366f1;
+  --c-approval: #f5a524;
+  --c-question: #22d3ee;
+  --c-error: #f4505e;
+  --c-success: #34d399;
+  --c-success-strong: #22c55e;
+  --c-rate: #f59e0b;
+  --c-pink: #f472b6;
+  --c-idle: #9aa3b2;
+
+  --c-error-text: #ff8d97;
+  --c-success-text: #86efac;
+  --c-warn-text: #fbc06a;
+  --c-info-text: #93c5fd;
+
+  /* ── Elevation ────────────────────────────────────────────────────────── */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-2: 0 6px 16px -6px rgba(0, 0, 0, 0.65), 0 2px 4px rgba(0, 0, 0, 0.3);
+  --shadow-3: 0 18px 40px -16px rgba(0, 0, 0, 0.8), 0 6px 14px -8px rgba(0, 0, 0, 0.55);
+  --shadow-island: 0 22px 44px -22px rgba(0, 0, 0, 0.9), 0 10px 20px -12px rgba(0, 0, 0, 0.6);
+
+  /* ── Blur ─────────────────────────────────────────────────────────────── */
+  --blur-xs: 2px;
+  --blur-sm: 6px;
+  --blur-md: 14px;
+  --blur-lg: 28px;
+
+  /* ── Icons ────────────────────────────────────────────────────────────── */
+  --icon-xs: 10px;
+  --icon-sm: 12px;
+  --icon-md: 14px;
+  --icon-lg: 18px;
+  --icon-xl: 22px;
+
+  /* ── Motion ───────────────────────────────────────────────────────────── */
+  --dur-instant: 90ms;
+  --dur-fast: 160ms;
+  --dur-base: 240ms;
+  --dur-slow: 360ms;
+  --dur-slower: 520ms;
+  --dur-spring: 620ms;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in: cubic-bezier(0.55, 0, 1, 0.45);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  /* Fallbacks for engines without linear(): close, without the settle. */
+  --ease-spring: cubic-bezier(0.34, 1.45, 0.64, 1);
+  --ease-spring-soft: cubic-bezier(0.3, 1.18, 0.4, 1);
+  --ease-spring-snappy: cubic-bezier(0.3, 1.3, 0.5, 1);
+
+  /* Stagger step for lists that enter one after another. */
+  --stagger: 36ms;
+
+  /* ── Focus ────────────────────────────────────────────────────────────── */
+  --focus-ring: 0 0 0 2px rgba(8, 9, 11, 1), 0 0 0 3.5px rgba(122, 170, 255, 0.9);
+}
+
+/* Real damped springs where the engine supports them (WebView2, WebKitGTK ≥ 2.44).
+   Sampled from x(t) = 1 − e^(−ζωt)(cos ω_d t + ζω/ω_d sin ω_d t). */
+@supports (transition-timing-function: linear(0, 1)) {
+  :root {
+    /* ζ 0.55 — playful: badges, confirmations, pops */
+    --ease-spring: linear(0, 0.0466, 0.1632, 0.3184, 0.4869, 0.65, 0.7948, 0.9142, 1.0052, 1.0685,
+      1.1066, 1.124, 1.1252, 1.115, 1.0978, 1.0771, 1.0559, 1.0361, 1.0191, 1.0055, 0.9955,
+      0.9889, 0.9853, 0.9841, 0.9846, 0.9863, 0.9887, 0.9914, 0.994, 0.9964, 0.9984, 0.9999,
+      1.001, 1.0016, 1.002, 1.002, 1.0019, 1.0016, 1.0013, 1.0009, 1);
+    /* ζ 0.78 — calm: panels, views, cards */
+    --ease-spring-soft: linear(0, 0.0493, 0.1643, 0.3072, 0.4536, 0.5887, 0.7049, 0.7997, 0.8732,
+      0.9277, 0.9662, 0.9917, 1.0074, 1.0159, 1.0194, 1.0198, 1.0181, 1.0156, 1.0126, 1.0098,
+      1.0072, 1.0051, 1.0034, 1.0021, 1.0011, 1.0004, 1, 0.9998, 0.9996, 0.9996, 0.9996, 0.9997, 1);
+    /* ζ 0.68 — quick: indicators, thumbs, toggles */
+    --ease-spring-snappy: linear(0, 0.0989, 0.3091, 0.5384, 0.7365, 0.8837, 0.979, 1.0309, 1.0518,
+      1.0531, 1.0444, 1.0321, 1.0201, 1.0105, 1.0038, 0.9997, 0.9977, 0.9971, 0.9973, 0.9979,
+      0.9985, 0.9992, 0.9996, 0.9999, 1.0001, 1.0001, 1.0002, 1.0001, 1.0001, 1.0001, 1, 1, 1);
+  }
+}
+
+/* Motion is a nicety, never a requirement: with reduced motion everything still
+   changes state, it just stops travelling, bouncing and looping. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-instant: 1ms;
+    --dur-fast: 1ms;
+    --dur-base: 1ms;
+    --dur-slow: 1ms;
+    --dur-slower: 1ms;
+    --dur-spring: 1ms;
+    --stagger: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+/* Shared keyframes ───────────────────────────────────────────────────────── */
+
+@keyframes cc-rise-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0) scale(0.985);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: blur(0);
+  }
+}
+
+@keyframes cc-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes cc-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes cc-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes cc-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-5px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(2px); }
+}
+
+@keyframes cc-breathe {
+  0%, 100% { opacity: var(--breathe-lo, 0.45); }
+  50% { opacity: var(--breathe-hi, 1); }
+}
+
+@keyframes cc-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  80%, 100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+@keyframes cc-shimmer {
+  from { background-position: 130% 0; }
+  to { background-position: -130% 0; }
+}
+
+@keyframes cc-draw {
+  to { stroke-dashoffset: 0; }
+}

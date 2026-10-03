@@ -10,6 +10,7 @@
 import { h, svg } from "./dom";
 import { ICONS } from "./icons";
 import { cubicBezier, clamp, lerp } from "../core/anim";
+import { kindIcon, parseStep } from "../core/activity";
 import type { AgentTask } from "../core/state";
 
 const ROW_H = 22;
@@ -30,9 +31,11 @@ interface Row {
 }
 
 function makeRow(): Row {
-  const chevron = svg(ICONS.chevronRight, 9, { stroke: 2.4 });
-  const check = svg(ICONS.check, 8, { stroke: 2.2 });
-  check.style.color = "#454850"; // the completed tick is dimmer than the chevron
+  // The "current" glyph is the kind of work the step is (terminal, pencil, eye…);
+  // it falls back to the chevron for steps that carry no tool.
+  const chevron = svg(ICONS.chevronRight, 11, { stroke: 2.1 });
+  const check = svg(ICONS.check, 9, { stroke: 2.4 });
+  check.style.color = "#4d5159"; // the completed tick is dimmer than the kind icon
   check.style.position = "absolute";
   chevron.style.position = "absolute";
   const shimmer = h("span", { class: "tick-text shimmer" });
@@ -54,6 +57,9 @@ function setText(row: Row, text: string) {
   row.text = text;
   row.shimmer.textContent = text;
   row.dim.textContent = text;
+  const kind = parseStep(text).kind;
+  row.chevron.querySelector("path")?.setAttribute("d", kind ? kindIcon(kind) : ICONS.chevronRight);
+  row.el.dataset.kind = kind ?? "";
 }
 
 /**

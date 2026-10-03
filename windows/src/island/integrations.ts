@@ -62,6 +62,11 @@ function handle(island: Island, update: IntegrationUpdate) {
         task.pillBadge = event.success ? "finished" : "error";
       }
       Sound.play(event.success ? "finish" : "error");
+      State.showFlash(
+        `${task.name} · ${event.label}`,
+        event.success ? "#34D399" : "#F4505E",
+        event.success ? "success" : "error",
+      );
       // Same as the Swift pollers: show the compact island so the badge is seen,
       // but never steal the screen for a successful deploy.
       island.reveal();

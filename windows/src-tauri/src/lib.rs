@@ -322,8 +322,9 @@ fn create_settings_window(app: &AppHandle) {
     match WebviewWindowBuilder::new(app, "settings", url)
         .additional_browser_args(BROWSER_ARGS)
         .title("Settings — Coucou")
-        .inner_size(560.0, 680.0)
-        .min_inner_size(460.0, 480.0)
+        // Room for the sidebar; below 680 logical px it folds down to icons.
+        .inner_size(840.0, 640.0)
+        .min_inner_size(480.0, 460.0)
         .resizable(true)
         .visible(false)
         .center()

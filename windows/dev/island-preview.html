@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Coucou — island preview</title>
+    <style>
+      /* A stand-in desktop, so the island's transparency, shoulders, shadow and
+         underglow can be judged against something. */
+      html { background: #1d2230; }
+      body {
+        min-height: 100vh;
+        background:
+          radial-gradient(900px 500px at 15% 10%, rgba(99, 102, 241, 0.35), transparent 60%),
+          radial-gradient(800px 600px at 90% 30%, rgba(236, 72, 153, 0.22), transparent 60%),
+          linear-gradient(160deg, #2a3350, #151925 70%) !important;
+      }
+      body.light {
+        background:
+          radial-gradient(900px 500px at 15% 10%, rgba(147, 197, 253, 0.8), transparent 60%),
+          linear-gradient(160deg, #e9edf5, #cfd6e4 70%) !important;
+      }
+      #panel {
+        position: fixed;
+        left: 50%;
+        bottom: 16px;
+        transform: translateX(-50%);
+        width: min(940px, calc(100vw - 32px));
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 12px;
+        border-radius: 16px;
+        background: rgba(10, 11, 14, 0.82);
+        backdrop-filter: blur(14px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        font: 500 12px system-ui, sans-serif;
+        z-index: 10;
+        user-select: none;
+      }
+      #panel b { width: 100%; color: #8e939c; font-weight: 600; margin-top: 4px; }
+      #panel button {
+        border: 0; border-radius: 999px; padding: 6px 11px; cursor: pointer;
+        background: rgba(255, 255, 255, 0.09); color: #f5f6f8; font: inherit;
+      }
+      #panel button:hover { background: rgba(255, 255, 255, 0.16); }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="panel"></div>
+    <script type="module" src="./island-preview.ts"></script>
+  </body>
+</html>

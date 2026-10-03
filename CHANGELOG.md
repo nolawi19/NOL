@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — Windows and Linux
+
+- A redesigned island and settings window, built on one design system (`windows/src/design/tokens.css`): type scale, spacing, radii, layered surfaces, elevation, blur, status colours, durations, easings and real spring curves
+- The island now flows out of the top edge of the screen, casts a soft shadow, and lights up with what Claude is doing: an underglow and a light running along its bottom edge while it works, a breathing rim when a request waits for you
+- Claude's activity in plain words, everywhere: Thinking, Reading files, Editing code, Running a command, Searching, Browsing the web, Needs your permission, Waiting for you, Finished, Stopped on an error — in the overview, in a status capsule in the header, and in the compact island, which widens to spell it out
+- Permission card: the exact command or path on two lines with "Show all" for long ones, a ring that counts down until the terminal takes the question back, and the button you click turns into its answer. The Y / N hints are gone: the island never takes the keyboard, and a permission is only ever approved with a click
+- Integration events (a Vercel deploy, an n8n failure) slide into the compact island for a few seconds
+- Chat: messages animate in, code and bold text are formatted, replies can be copied, and "New" starts a fresh conversation
+- Error cards offer a real way forward: Open in VS Code / Open n8n and Dismiss (the old Retry and Open in n8n buttons did nothing); chat errors about a missing key link straight to Settings
+- Quick settings in the island show whether an API key is really saved (it used to show red regardless)
+- Settings: a sidebar with Claude Code, Claude, Integrations, General, Sound, Display, Startup and About; save buttons show saving, saved and failed states; keys are checked as you type; removing a key asks for a second click; Claude Opus 5.5 and Sonnet 5.5 join the model list
+- With reduced motion turned on, the island resizes in one step and interface transitions and loops are cut to a single frame (Mochi still blinks); a hidden island still runs no animation at all
+- `npm run dev` serves `dev/island-preview.html`, which replays Claude Code hook events and integration updates through the real handlers to check every state in a browser
+
 ## 0.1.4 — October 3, 2026
 
 - See what Claude is editing, live: each file edit shows up in the session ticker with its +N −M lines, and a click opens the diff right in the notch (#177)

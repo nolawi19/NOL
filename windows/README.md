@@ -91,9 +91,15 @@ npm run pack           # builds the installer and drops it in windows/release/
 ```
 
 `npm run dev` alone serves the front end in an ordinary browser, which is enough
-to work on the island's looks. It also serves `dev/upload-preview.html`, which
-replays the whole file-drop choreography on a loop — the one part of the UI that
-otherwise needs a real drag from Explorer to see. Neither page ships in the app.
+to work on the island's looks. Two pages help with that, and neither ships in
+the app:
+
+- `dev/island-preview.html` boots the real island and replays Claude Code hook
+  events (prompts, tool calls, permission requests, questions, stops) and
+  integration updates through the same handlers the app uses, so every state
+  can be seen without a running Claude Code session.
+- `dev/upload-preview.html` replays the whole file-drop choreography on a loop —
+  the one part of the UI that otherwise needs a real drag from Explorer to see.
 
 `npm run pack` leaves two files in `windows/release/`, the same names the release
 workflow publishes:
@@ -122,6 +128,8 @@ npm run icons          # regenerates src-tauri/icons from scripts/gen-icons.mjs
 ```
 windows/
   src/                 island front end (TypeScript, no framework)
+    design/            design tokens shared by the island and the settings window
+    core/activity.ts   what Claude is doing, derived once for every surface
     mochi/             Mochi and the launch greeting, in Canvas 2D
     island/            state machine, hooks, integrations
     views/             every island view

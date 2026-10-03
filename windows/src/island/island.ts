@@ -5,7 +5,7 @@ import { Tracked, Spring, clamp } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
-  ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
+  ROUNDED_CORNER, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
   islandSize,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
@@ -16,8 +16,11 @@ import { Greeting } from "../mochi/greeting";
 import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
-import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
+import { buildHeader, buildViews, tabIndex, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
+import { icon, setIcon, TextSwap } from "../views/ui";
+import { LINE } from "../views/icons";
+import { primaryPhase, STATE_COLOR, type Phase } from "../core/activity";
 import { IslandStateMachine } from "./fsm";
 
 const BOT_OVERHANG = 40;
@@ -31,6 +34,8 @@ const UPLOAD_VIEWS: ReadonlySet<IslandViewName> = new Set(["upload", "uploading"
 const PRE_PROGRESS = USC.T_PROG_START - USC.T_DROP;
 
 const modeOrder = (m: IslandMode) => (m === "hidden" ? 0 : m === "compact" ? 1 : 2);
+
+const REDUCED_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 export class Island {
   readonly fsm = new IslandStateMachine();
@@ -46,6 +51,16 @@ export class Island {
   private miniGrid!: HTMLElement;
   private countdown!: HTMLElement;
   private wakeStrip!: HTMLElement;
+  private shoulderL!: HTMLElement;
+  private shoulderR!: HTMLElement;
+  private compactStatus!: HTMLElement;
+  private compactIcon!: SVGSVGElement;
+  private compactText = new TextSwap("cs-text");
+  /** Compact island stretched to make room for a status line. */
+  private compactWide = false;
+  /** View whose show() ran last, so hide() reaches exactly that one. */
+  private shownView: IslandViewName | null = null;
+  private decisionTimer: number | null = null;
 
   private header!: ViewHost;
   private views!: Map<IslandViewName, ViewHost>;
@@ -134,18 +149,27 @@ export class Island {
       openUrl: (url) => {
         if (url) void Bridge.openUrl(url);
       },
+      openN8n: () => void Bridge.openN8n(),
+      relayout: () => this.animateGeometry(!State.detailExpanded),
       decide: (d) => {
         const req = State.pendingApproval;
         void Bridge.log(`decide ${d} req=${req?.requestId ?? "none"}`);
         if (!req) return;
         Sound.play(d === "deny" ? "blip" : "approve");
+        // The decision leaves right now; only the card lingers, long enough to
+        // show what was chosen.
         void Bridge.approvalDecision(req.requestId, d);
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
         State.updateTask("integration_claude", "working");
         State.setPillBadge("integration_claude", null);
-        this.setView(State.defaultView());
+        if (this.decisionTimer != null) window.clearTimeout(this.decisionTimer);
+        this.decisionTimer = window.setTimeout(() => {
+          this.decisionTimer = null;
+          // A newer request may have taken the card in the meantime.
+          if (State.view === "approval" && !State.pendingApproval) this.setView(State.defaultView());
+        }, 720);
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
@@ -175,6 +199,16 @@ export class Island {
     this.greetingCanvas = h("canvas", { id: "greeting-canvas" });
     this.miniGrid = h("div", { id: "mini-grid" });
     this.countdown = h("div", { id: "countdown" });
+    // Concave fillets that tie the island to the top edge of the screen.
+    this.shoulderL = h("div", { class: "shoulder l" });
+    this.shoulderR = h("div", { class: "shoulder r" });
+    this.compactIcon = icon(LINE.sparkle, 11, 2.2);
+    this.compactStatus = h(
+      "div",
+      { id: "compact-status" },
+      h("span", { class: "cs-icon" }, this.compactIcon),
+      this.compactText.el,
+    );
 
     this.header = buildHeader(actions);
     this.views = buildViews(actions, () => this.animateGeometry(false));
@@ -197,14 +231,21 @@ export class Island {
     this.clipEl = h(
       "div",
       { id: "island-clip" },
+      h("div", { id: "island-sheen" }),
       this.greetingCanvas,
       this.uploadCanvas.el,
       this.contentEl,
+      this.compactStatus,
+      h("div", { id: "island-edge" }, h("i")),
     );
     this.islandEl = h(
       "div",
-      { id: "island" },
+      { id: "island", "data-mode": "hidden" },
+      h("div", { id: "island-aura" }),
+      this.shoulderL,
+      this.shoulderR,
       this.clipEl,
+      h("div", { id: "island-ring" }),
       this.botGlow,
       this.botCanvas,
       this.miniGrid,
@@ -260,13 +301,21 @@ export class Island {
     const prev = State.mode;
     if (mode === prev) return;
     State.mode = mode;
-    if (mode === "expanded") Sound.play("open");
+    this.islandEl.dataset.mode = mode;
+    if (mode === "expanded") {
+      Sound.play("open");
+      // Re-arm the staggered entrance of the header and the card.
+      this.contentEl.classList.remove("enter");
+      void this.contentEl.offsetWidth;
+      this.contentEl.classList.add("enter");
+    }
     if (prev === "expanded") {
       Sound.play("close");
       State.isPinned = false;
       void Bridge.focusWindow(false);
     }
     if (mode !== "expanded") {
+      this.syncViewLifecycle(null);
       this.engine.resetMorph();
       // Nothing can be seen of the sequence once the island is shut, and leaving
       // it running would keep the frame loop awake — the island must cost
@@ -288,8 +337,17 @@ export class Island {
     if (UploadSeq.isActive && !UPLOAD_VIEWS.has(view)) UploadSeq.deactivate();
   }
 
+  /** Tells the views which way the user is travelling between tabs. */
+  private markDirection(view: IslandViewName) {
+    const from = tabIndex(State.view);
+    const to = tabIndex(view);
+    this.viewsEl.dataset.dir = from >= 0 && to >= 0 && from !== to ? (to > from ? "fwd" : "back") : "none";
+    if (view !== State.view) State.detailExpanded = false;
+  }
+
   expand(view: IslandViewName) {
     this.stopSequenceIfLeaving(view);
+    this.markDirection(view);
     State.view = view;
     if (State.mode !== "expanded") this.setMode("expanded");
     else this.animateGeometry(false);
@@ -300,6 +358,7 @@ export class Island {
 
   setView(view: IslandViewName) {
     this.stopSequenceIfLeaving(view);
+    this.markDirection(view);
     if (State.mode !== "expanded") {
       this.fsm.forceHome();
       State.view = view;
@@ -307,7 +366,8 @@ export class Island {
       State.notify();
       return;
     }
-    const grew = VIEW_LAYOUTS[view].height >= VIEW_LAYOUTS[State.view].height;
+    const grew = islandSize("expanded", view, State.chatHistory.length).h >=
+      islandSize("expanded", State.view, State.chatHistory.length, { detail: State.detailExpanded }).h;
     State.view = view;
     State.lastActivity = performance.now();
     this.animateGeometry(!grew);
@@ -450,14 +510,22 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length);
+    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length, {
+      detail: State.detailExpanded,
+      wide: this.compactWide,
+    });
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
 
   private animateGeometry(shrinking: boolean) {
     const { w, h, r } = this.targetSize();
-    if (shrinking) {
+    if (REDUCED_MOTION.matches) {
+      // Reduced motion: the island changes size in one step instead of travelling.
+      this.width.jump(w);
+      this.height.jump(h);
+      this.radius.jump(r);
+    } else if (shrinking) {
       this.width.curveTowards(w);
       this.height.curveTowards(h);
       this.radius.curveTowards(r);
@@ -477,6 +545,13 @@ export class Island {
     this.islandEl.style.height = `${hh}px`;
     this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
     this.islandEl.style.transform = `translateX(-50%)`;
+    // The fillets grow with the corner radius, and vanish as the island retracts.
+    const sh = Math.max(0, Math.min(r * 0.62, hh * 0.9));
+    const shPx = `${sh.toFixed(2)}px`;
+    for (const el of [this.shoulderL, this.shoulderR]) {
+      el.style.width = shPx;
+      el.style.height = shPx;
+    }
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
     this.miniGrid.style.left = `${w - 40 - 14.5}px`;
@@ -846,6 +921,8 @@ export class Island {
       view.el.classList.toggle("on", on);
       if (on) view.sync();
     }
+    this.syncViewLifecycle(expanded && !greetingActive ? State.view : null);
+    this.syncPhase();
 
     // The chat is the only view with a text field, so it is the only time the
     // island is allowed to take keyboard focus.
@@ -878,6 +955,52 @@ export class Island {
 
     syncMiniBotStates(State.tasks);
     this.engine.setState(State.effectiveState);
+  }
+
+  /** Runs hide() on the view that left and show() on the one that arrived. */
+  private syncViewLifecycle(active: IslandViewName | null) {
+    if (active === this.shownView) return;
+    if (this.shownView) this.views.get(this.shownView)?.hide?.();
+    this.shownView = active;
+    if (active) this.views.get(active)?.show?.();
+  }
+
+  /**
+   * The island's light: the underglow, the travelling edge and the alert ring
+   * all follow the most urgent thing going on. The compact island also spells
+   * it out, and widens a little to make room.
+   */
+  private syncPhase() {
+    const phase: Phase | null = primaryPhase(State.tasks, State.focusId);
+    const override = State.stateOverride;
+    const tone = override === "dizzy" ? "idle" : override === "thinking" ? "active" : phase?.tone ?? "idle";
+    const color = override === "thinking" ? STATE_COLOR.thinking : phase?.color ?? STATE_COLOR.idle;
+    if (this.islandEl.dataset.tone !== tone) this.islandEl.dataset.tone = tone;
+    this.islandEl.style.setProperty("--accent", color);
+
+    let line: string | null = null;
+    let path: string = LINE.sparkle;
+    let lineColor = color;
+    if (phase) {
+      line = phase.detail && phase.tone !== "alert" ? `${phase.label} · ${phase.detail}` : phase.label;
+      path = phase.icon;
+    } else if (State.flash) {
+      line = State.flash.text;
+      path = State.flash.tone === "error" ? LINE.xCircle : State.flash.tone === "success" ? LINE.checkCircle : LINE.info;
+      lineColor = State.flash.color;
+    }
+    this.compactStatus.classList.toggle("on", line != null);
+    this.compactStatus.style.setProperty("--cs", lineColor);
+    if (line != null) {
+      setIcon(this.compactIcon, path);
+      this.compactText.set(line, State.mode !== "compact");
+    }
+
+    const wide = line != null;
+    if (wide !== this.compactWide) {
+      this.compactWide = wide;
+      if (State.mode === "compact") this.animateGeometry(!wide);
+    }
   }
 
   /** Applies settings coming from Rust at boot. */

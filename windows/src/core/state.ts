@@ -19,13 +19,34 @@ export interface AgentTask {
   miniEye?: EyeShape | null;
   pillBadge?: PillBadge | null;
   sessionCwd?: string | null;
+  /** Wall-clock ms when the current session started (first hook event). */
+  sessionStart?: number | null;
+  /** Wall-clock ms when the current prompt was submitted. */
+  turnStart?: number | null;
+  /** Tool calls made since the current prompt was submitted. */
+  toolCount?: number;
 }
 
 export interface ApprovalInfo {
   requestId: string;
   sessionId: string;
   tool: string;
+  /** "Tool · target" — the one-line summary used in logs and badges. */
   command: string;
+  /** Just the thing being authorised: the command, the path, the URL. */
+  target: string;
+  /** Wall-clock ms when the request reached the island. */
+  receivedAt: number;
+  /** How long the island has before the terminal takes the question back, ms. */
+  timeoutMs: number;
+}
+
+/** A short-lived line shown in the compact island ("Vercel · Deployment ready"). */
+export interface Flash {
+  text: string;
+  color: string;
+  tone: "success" | "error" | "info";
+  at: number;
 }
 
 export interface ChatMessage {
@@ -137,6 +158,10 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
+  /** Approval / question card showing the full text instead of two lines. */
+  detailExpanded = false;
+  flash: Flash | null = null;
+  private flashTimer: number | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
 
@@ -261,6 +286,18 @@ class AppState {
       this.settings.activeIntegrations = [...active, id];
     }
     this.loadIntegrationTasks();
+  }
+
+  /** Shows a transient line in the compact island for a few seconds. */
+  showFlash(text: string, color: string, tone: Flash["tone"], ms = 6000) {
+    this.flash = { text, color, tone, at: performance.now() };
+    if (this.flashTimer != null) window.clearTimeout(this.flashTimer);
+    this.flashTimer = window.setTimeout(() => {
+      this.flashTimer = null;
+      this.flash = null;
+      this.notify();
+    }, ms);
+    this.notify();
   }
 
   defaultView(): IslandViewName {
