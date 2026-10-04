@@ -196,7 +196,10 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
         .to_string();
 
     if event != "PermissionRequest" {
-        log::line(format!("hook {event}"));
+        // The status line refreshes every few hundred milliseconds: not worth a log line.
+        if event != "StatusLine" {
+            log::line(format!("hook {event}"));
+        }
         let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
         pipe.finish();
         return;

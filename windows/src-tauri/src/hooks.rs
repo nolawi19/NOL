@@ -40,6 +40,10 @@ const MARKER: &str = "coucou-hook";
 #[serde(rename_all = "camelCase")]
 pub struct HookStatus {
     pub installed: bool,
+    /// Coucou is Claude Code's status line (the cost meter works).
+    pub status_line: bool,
+    /// Someone else's status line is set: Coucou leaves it alone.
+    pub foreign_status_line: bool,
     pub settings_path: String,
     pub hook_path: String,
     pub hook_ready: bool,
@@ -139,9 +143,22 @@ fn entry_is_ours(entry: &Value) -> bool {
         .unwrap_or(false)
 }
 
+fn status_line_is_ours(v: &Value) -> bool {
+    v.get("command").and_then(Value::as_str).map(|c| c.contains(MARKER)).unwrap_or(false)
+}
+
 /// Settings with Coucou's hooks added; everything else is left untouched.
+/// The status line (cost meter) is only added when none is set: a status line
+/// the user already has is theirs and stays exactly as it is.
 fn merged(existing: &Value) -> Value {
     let mut root = existing.as_object().cloned().unwrap_or_default();
+    let free = root.get("statusLine").map(status_line_is_ours).unwrap_or(true);
+    if free {
+        root.insert(
+            "statusLine".into(),
+            json!({ "type": "command", "command": hook_command("--statusline"), "padding": 0 }),
+        );
+    }
     let mut hooks = root
         .get("hooks")
         .and_then(Value::as_object)
@@ -172,6 +189,9 @@ fn merged(existing: &Value) -> Value {
 /// Settings with every Coucou entry removed, and nothing else changed.
 fn without_ours(existing: &Value) -> Value {
     let mut root = existing.as_object().cloned().unwrap_or_default();
+    if root.get("statusLine").map(status_line_is_ours).unwrap_or(false) {
+        root.remove("statusLine");
+    }
     let Some(hooks) = root.get("hooks").and_then(Value::as_object).cloned() else {
         return Value::Object(root);
     };
@@ -251,8 +271,11 @@ pub fn status() -> HookStatus {
         })
         .unwrap_or(false);
     let hook_path = settings::hook_exe_path();
+    let status_line = current.get("statusLine");
     HookStatus {
         installed,
+        status_line: status_line.map(status_line_is_ours).unwrap_or(false),
+        foreign_status_line: status_line.map(|s| !status_line_is_ours(s)).unwrap_or(false),
         settings_path: settings_path().to_string_lossy().to_string(),
         hook_ready: hook_path.exists(),
         hook_path: hook_path.to_string_lossy().to_string(),

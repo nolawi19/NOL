@@ -168,6 +168,8 @@ mod layer {
     use std::os::raw::{c_char, c_int};
 
     pub const LAYER_OVERLAY: c_int = 3;
+    pub const EDGE_LEFT: c_int = 0;
+    pub const EDGE_RIGHT: c_int = 1;
     pub const EDGE_TOP: c_int = 2;
     pub const KEYBOARD_NONE: c_int = 0;
     pub const KEYBOARD_ON_DEMAND: c_int = 2;
@@ -181,6 +183,7 @@ mod layer {
         pub fn gtk_layer_set_anchor(window: *mut GtkWindow, edge: c_int, anchor: c_int);
         pub fn gtk_layer_set_exclusive_zone(window: *mut GtkWindow, zone: c_int);
         pub fn gtk_layer_set_keyboard_mode(window: *mut GtkWindow, mode: c_int);
+        pub fn gtk_layer_set_margin(window: *mut GtkWindow, edge: c_int, margin: c_int);
     }
 }
 
@@ -261,6 +264,25 @@ pub fn make_non_activating(win: &WebviewWindow) {
     });
     LAYER_SURFACE.store(true, Ordering::Relaxed);
     crate::log::line("island is a layer-shell overlay");
+}
+
+/// Left / right placement on a layer surface: the compositor places it, so the
+/// anchors and margins say where. Centre is the top anchor alone.
+pub fn apply_layer_placement(win: &WebviewWindow, margin_physical: i32) {
+    if !LAYER_SURFACE.load(Ordering::Relaxed) {
+        return;
+    }
+    let Ok(gw) = win.gtk_window() else { return };
+    let ptr = gtk_window_ptr(&gw);
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let margin = (margin_physical as f64 / scale).round() as i32;
+    let p = crate::island::PLACEMENT.load(Ordering::Relaxed);
+    unsafe {
+        layer::gtk_layer_set_anchor(ptr, layer::EDGE_LEFT, (p == 1) as i32);
+        layer::gtk_layer_set_anchor(ptr, layer::EDGE_RIGHT, (p == 2) as i32);
+        layer::gtk_layer_set_margin(ptr, layer::EDGE_LEFT, if p == 1 { margin } else { 0 });
+        layer::gtk_layer_set_margin(ptr, layer::EDGE_RIGHT, if p == 2 { margin } else { 0 });
+    }
 }
 
 /// Temporarily allow keyboard focus so a text field inside the island can be
@@ -420,5 +442,124 @@ mod stats_tests {
         let t = "MemTotal:       16000 kB\nMemFree:  1000 kB\nMemAvailable:    8000 kB\n";
         assert_eq!(parse_meminfo(t), Some((16000 * 1024, 8000 * 1024)));
         assert_eq!(parse_meminfo("MemTotal: 1 kB\n"), None);
+    }
+}
+
+// ── Desktop awareness (desktop.rs) ────────────────────────────────────────────
+
+use crate::desktop::{run_fixed, uri_to_path, NowPlaying};
+
+const QUICK: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// GNOME / Cinnamon / MATE through gsettings, then KDE Plasma's config file.
+pub fn wallpaper_path() -> Option<PathBuf> {
+    for (schema, key) in [
+        ("org.gnome.desktop.background", "picture-uri"),
+        ("org.gnome.desktop.background", "picture-uri-dark"),
+        ("org.cinnamon.desktop.background", "picture-uri"),
+        ("org.mate.background", "picture-filename"),
+    ] {
+        if let Ok(out) = run_fixed("gsettings", &["get", schema, key], QUICK) {
+            let p = PathBuf::from(uri_to_path(out.trim()));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    let kde = xdg("XDG_CONFIG_HOME", ".config").join("plasma-org.kde.plasma.desktop-appletsrc");
+    if let Ok(text) = std::fs::read_to_string(kde) {
+        for line in text.lines() {
+            if let Some(v) = line.strip_prefix("Image=") {
+                let p = PathBuf::from(uri_to_path(v));
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// MPRIS players on the session bus, through gdbus (part of GLib).
+fn mpris_players() -> Vec<String> {
+    let Ok(out) = run_fixed(
+        "gdbus",
+        &["call", "--session", "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus", "--method", "org.freedesktop.DBus.ListNames"],
+        QUICK,
+    ) else {
+        return vec![];
+    };
+    out.split('\'').filter(|s| s.starts_with("org.mpris.MediaPlayer2.")).map(str::to_string).collect()
+}
+
+fn mpris_prop(player: &str, prop: &str) -> Option<String> {
+    run_fixed(
+        "gdbus",
+        &["call", "--session", "--dest", player, "--object-path", "/org/mpris/MediaPlayer2", "--method", "org.freedesktop.DBus.Properties.Get", "org.mpris.MediaPlayer2.Player", prop],
+        QUICK,
+    )
+    .ok()
+}
+
+/// Text between `start` and the next `end` in GVariant output.
+fn between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
+    let i = text.find(start)? + start.len();
+    let j = text[i..].find(end)?;
+    Some(&text[i..i + j])
+}
+
+pub fn parse_mpris_metadata(text: &str) -> (String, String) {
+    let title = between(text, "'xesam:title': <'", "'>").unwrap_or("").to_string();
+    let artist = between(text, "'xesam:artist': <['", "'").unwrap_or("").to_string();
+    (title, artist)
+}
+
+/// The player that is playing, else the first one.
+fn pick_player() -> Option<(String, bool)> {
+    let players = mpris_players();
+    let mut first = None;
+    for p in players {
+        let playing = mpris_prop(&p, "PlaybackStatus").map(|s| s.contains("'Playing'")).unwrap_or(false);
+        if playing {
+            return Some((p, true));
+        }
+        first.get_or_insert((p, false));
+    }
+    first
+}
+
+pub fn now_playing() -> Result<Option<NowPlaying>, String> {
+    let Some((player, playing)) = pick_player() else { return Ok(None) };
+    let meta = mpris_prop(&player, "Metadata").unwrap_or_default();
+    let (title, artist) = parse_mpris_metadata(&meta);
+    let source = player.trim_start_matches("org.mpris.MediaPlayer2.").split('.').next().unwrap_or("").to_string();
+    Ok(Some(NowPlaying { title, artist, playing, source }))
+}
+
+pub fn media_control(action: &str) -> Result<(), String> {
+    let method = match action {
+        "toggle" => "org.mpris.MediaPlayer2.Player.PlayPause",
+        "next" => "org.mpris.MediaPlayer2.Player.Next",
+        "previous" => "org.mpris.MediaPlayer2.Player.Previous",
+        _ => return Err("Unknown action.".into()),
+    };
+    let (player, _) = pick_player().ok_or("Nothing is playing.")?;
+    run_fixed("gdbus", &["call", "--session", "--dest", &player, "--object-path", "/org/mpris/MediaPlayer2", "--method", method], QUICK).map(|_| ())
+}
+
+/// No speech recognition engine ships with Linux desktops.
+pub fn dictate() -> Result<String, String> {
+    Err("Dictation isn't available on Linux: there is no built-in speech recognition to use.".into())
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::*;
+
+    #[test]
+    fn mpris_metadata() {
+        let text = "(<{'mpris:trackid': <'/x'>, 'xesam:title': <'Song A'>, 'xesam:artist': <['Band B']>}>,)";
+        assert_eq!(parse_mpris_metadata(text), ("Song A".into(), "Band B".into()));
+        assert_eq!(parse_mpris_metadata("(<{}>,)"), (String::new(), String::new()));
     }
 }

@@ -68,7 +68,10 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
     spawn(app.clone(), "integration_github", 7, 300, poll_github);
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
-    spawn(app, "integration_notion", 9, 300, poll_notion);
+    spawn(app.clone(), "integration_notion", 9, 300, poll_notion);
+    spawn(app.clone(), "integration_sentry", 10, 120, poll_sentry);
+    spawn(app.clone(), "integration_linear", 11, 300, poll_linear);
+    spawn(app, "integration_jira", 12, 300, poll_jira);
 }
 
 /// True when the user has this integration switched on in settings.
@@ -113,21 +116,24 @@ pub async fn poll_once(app: AppHandle, id: &str) {
         "integration_resend" => poll_resend(app).await,
         "integration_notion" => poll_notion(app).await,
         "integration_calcom" => poll_calcom(app).await,
+        "integration_sentry" => poll_sentry(app).await,
+        "integration_linear" => poll_linear(app).await,
+        "integration_jira" => poll_jira(app).await,
         _ => {}
     }
 }
 
 /// Remembers the newest id per integration so an event fires once, not on every poll.
-struct Seen(Mutex<std::collections::HashMap<&'static str, String>>);
+struct Seen(Mutex<std::collections::HashMap<String, String>>);
 
 static SEEN: std::sync::LazyLock<Seen> =
     std::sync::LazyLock::new(|| Seen(Mutex::new(std::collections::HashMap::new())));
 
 /// Returns true the first time a given id is seen (and false on the very first
 /// load, which only fills the card).
-fn is_new(key: &'static str, id: &str) -> bool {
+fn is_new(key: &str, id: &str) -> bool {
     let mut map = SEEN.0.lock().unwrap();
-    match map.insert(key, id.to_string()) {
+    match map.insert(key.to_string(), id.to_string()) {
         Some(previous) => previous != id,
         None => false, // first poll: populate silently, like the Swift pollers
     }
@@ -300,26 +306,66 @@ async fn poll_github(app: AppHandle) {
         .header("User-Agent", "Coucou")
         .send()
         .await;
-    let stars: i64 = match repos {
-        Ok(r) if r.status().is_success() => r
-            .json::<Value>()
-            .await
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .map(|list| {
-                list.iter()
-                    .filter_map(|r| r.get("stargazers_count").and_then(Value::as_i64))
-                    .sum()
-            })
-            .unwrap_or(0),
-        _ => 0,
+    let repo_list: Vec<Value> = match repos {
+        Ok(r) if r.status().is_success() => r.json::<Value>().await.ok().and_then(|v| v.as_array().cloned()).unwrap_or_default(),
+        _ => vec![],
     };
+    let stars: i64 = repo_list
+        .iter()
+        .filter_map(|r| r.get("stargazers_count").and_then(Value::as_i64))
+        .sum();
+
+    // GitHub Actions: the latest workflow run of the five most recently pushed
+    // repositories. Needs Actions read access on the token; without it the
+    // list is just empty.
+    let mut runs = Vec::new();
+    let mut event = None;
+    for repo in repo_list.iter().take(5) {
+        let Some(full) = repo.get("full_name").and_then(Value::as_str) else { continue };
+        let url = format!("https://api.github.com/repos/{full}/actions/runs?per_page=1");
+        let resp = http
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "Coucou")
+            .send()
+            .await;
+        let Ok(resp) = resp else { continue };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let v: Value = resp.json().await.unwrap_or(json!({}));
+        let Some(run) = v.get("workflow_runs").and_then(Value::as_array).and_then(|a| a.first()) else { continue };
+        let s = |k: &str| run.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let run_id = run.get("id").map(|x| x.to_string()).unwrap_or_default();
+        let conclusion = s("conclusion");
+        // One event per finished run, the first time it's seen finished.
+        if !conclusion.is_empty() && event.is_none() {
+            if is_new(&format!("gh-run-{full}"), &format!("{run_id}:{conclusion}")) {
+                let ok = conclusion == "success";
+                event = Some(IntegrationEvent {
+                    success: ok,
+                    label: if ok { "Workflow passed".into() } else { format!("Workflow {conclusion}") },
+                    detail: Some(format!("{} · {}", repo.get("name").and_then(Value::as_str).unwrap_or(full), s("name"))),
+                });
+            }
+        }
+        runs.push(json!({
+            "repo": repo.get("name").and_then(Value::as_str).unwrap_or(full),
+            "name": s("name"),
+            "status": s("status"),
+            "conclusion": conclusion,
+            "branch": s("head_branch"),
+            "url": s("html_url"),
+            "updatedAt": s("updated_at"),
+        }));
+    }
 
     emit(&app, IntegrationUpdate {
         id: "integration_github",
-        data: json!({ "totalRepos": public + private, "totalStars": stars }),
+        data: json!({ "totalRepos": public + private, "totalStars": stars, "runs": runs }),
         error: None,
-        event: None,
+        event,
     });
 }
 
@@ -761,5 +807,172 @@ fn fmt_value(v: &Value) -> String {
         Value::Array(a) => format!("[{}]", a.len()),
         Value::Object(_) => "{…}".into(),
         other => other.to_string(),
+    }
+}
+
+// ── Sentry ────────────────────────────────────────────────────────────────────
+
+/// A host or slug safe to put into a URL path: letters, digits, dots, dashes.
+pub fn safe_slug(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 100 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+async fn poll_sentry(app: AppHandle) {
+    let Some(token) = secrets::get("sentry-token") else { return };
+    let Some(org) = secrets::get("sentry-org") else { return };
+    let org = org.trim().to_string();
+    if !safe_slug(&org) {
+        emit(&app, IntegrationUpdate { id: "integration_sentry", data: json!({}), error: Some("Organization slug looks wrong".into()), event: None });
+        return;
+    }
+    let response = client()
+        .get(format!("https://sentry.io/api/0/organizations/{org}/issues/"))
+        .query(&[("query", "is:unresolved"), ("statsPeriod", "24h"), ("limit", "5"), ("sort", "date")])
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await;
+    let Ok(response) = response else { return };
+    if !response.status().is_success() {
+        emit(&app, IntegrationUpdate {
+            id: "integration_sentry",
+            data: json!({}),
+            error: Some(status_error(response.status().as_u16(), "Token needs event:read")),
+            event: None,
+        });
+        return;
+    }
+    let list: Vec<Value> = response.json::<Value>().await.ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let issues: Vec<Value> = list
+        .iter()
+        .map(|i| {
+            let s = |k: &str| i.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            json!({
+                "id": s("id"),
+                "title": s("title"),
+                "culprit": s("culprit"),
+                "level": s("level"),
+                "count": s("count"),
+                "lastSeen": s("lastSeen"),
+                "url": s("permalink"),
+                "project": i.get("project").and_then(|p| p.get("slug")).and_then(Value::as_str).unwrap_or(""),
+            })
+        })
+        .collect();
+    let event = issues.first().and_then(|first| {
+        let id = first.get("id").and_then(Value::as_str).unwrap_or("");
+        is_new("sentry", id).then(|| IntegrationEvent {
+            success: false,
+            label: "New Sentry issue".into(),
+            detail: first.get("title").and_then(Value::as_str).map(|t| t.chars().take(80).collect()),
+        })
+    });
+    emit(&app, IntegrationUpdate { id: "integration_sentry", data: json!({ "issues": issues }), error: None, event });
+}
+
+// ── Linear ────────────────────────────────────────────────────────────────────
+
+async fn poll_linear(app: AppHandle) {
+    let Some(key) = secrets::get("linear-api-key") else { return };
+    let query = r#"{ viewer { assignedIssues(first: 6, orderBy: updatedAt, filter: { state: { type: { in: ["started", "unstarted"] } } }) { nodes { identifier title url priority state { name type } } } } }"#;
+    let response = client()
+        .post("https://api.linear.app/graphql")
+        .header("Authorization", key)
+        .json(&json!({ "query": query }))
+        .send()
+        .await;
+    let Ok(response) = response else { return };
+    if !response.status().is_success() {
+        emit(&app, IntegrationUpdate {
+            id: "integration_linear",
+            data: json!({}),
+            error: Some(status_error(response.status().as_u16(), "Key lacks read access")),
+            event: None,
+        });
+        return;
+    }
+    let v: Value = response.json().await.unwrap_or(json!({}));
+    let nodes = v.pointer("/data/viewer/assignedIssues/nodes").and_then(Value::as_array).cloned().unwrap_or_default();
+    let issues: Vec<Value> = nodes
+        .iter()
+        .map(|n| {
+            json!({
+                "key": n.get("identifier").and_then(Value::as_str).unwrap_or(""),
+                "title": n.get("title").and_then(Value::as_str).unwrap_or(""),
+                "url": n.get("url").and_then(Value::as_str).unwrap_or(""),
+                "state": n.pointer("/state/name").and_then(Value::as_str).unwrap_or(""),
+                "started": n.pointer("/state/type").and_then(Value::as_str) == Some("started"),
+                "priority": n.get("priority").and_then(Value::as_i64).unwrap_or(0),
+            })
+        })
+        .collect();
+    emit(&app, IntegrationUpdate { id: "integration_linear", data: json!({ "issues": issues }), error: None, event: None });
+}
+
+// ── Jira ──────────────────────────────────────────────────────────────────────
+
+async fn poll_jira(app: AppHandle) {
+    let (Some(site), Some(email), Some(token)) = (secrets::get("jira-site"), secrets::get("jira-email"), secrets::get("jira-token")) else {
+        return;
+    };
+    let site = site.trim().trim_start_matches("https://").trim_end_matches('/').to_string();
+    if !safe_slug(&site) || !site.contains('.') {
+        emit(&app, IntegrationUpdate { id: "integration_jira", data: json!({}), error: Some("Site should look like yourteam.atlassian.net".into()), event: None });
+        return;
+    }
+    let response = client()
+        .get(format!("https://{site}/rest/api/3/search/jql"))
+        .query(&[
+            ("jql", "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"),
+            ("maxResults", "6"),
+            ("fields", "summary,status,priority"),
+        ])
+        .basic_auth(email.trim(), Some(token.trim()))
+        .header("Accept", "application/json")
+        .send()
+        .await;
+    let Ok(response) = response else { return };
+    if !response.status().is_success() {
+        emit(&app, IntegrationUpdate {
+            id: "integration_jira",
+            data: json!({}),
+            error: Some(status_error(response.status().as_u16(), "Account lacks access")),
+            event: None,
+        });
+        return;
+    }
+    let v: Value = response.json().await.unwrap_or(json!({}));
+    let issues: Vec<Value> = v
+        .get("issues")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .map(|i| {
+                    let key = i.get("key").and_then(Value::as_str).unwrap_or("");
+                    json!({
+                        "key": key,
+                        "title": i.pointer("/fields/summary").and_then(Value::as_str).unwrap_or(""),
+                        "state": i.pointer("/fields/status/name").and_then(Value::as_str).unwrap_or(""),
+                        "started": i.pointer("/fields/status/statusCategory/key").and_then(Value::as_str) == Some("indeterminate"),
+                        "priority": i.pointer("/fields/priority/name").and_then(Value::as_str).unwrap_or(""),
+                        "url": format!("https://{site}/browse/{key}"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    emit(&app, IntegrationUpdate { id: "integration_jira", data: json!({ "issues": issues }), error: None, event: None });
+}
+
+#[cfg(test)]
+mod slug_tests {
+    use super::safe_slug;
+
+    #[test]
+    fn slugs() {
+        assert!(safe_slug("my-org"));
+        assert!(safe_slug("team.atlassian.net"));
+        assert!(!safe_slug("evil.com/../x"));
+        assert!(!safe_slug("a b"));
+        assert!(!safe_slug(""));
     }
 }

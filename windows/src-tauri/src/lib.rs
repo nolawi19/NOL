@@ -1,6 +1,7 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
 mod claude;
+mod desktop;
 mod files;
 mod hooks;
 mod integrations;
@@ -65,7 +66,8 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     let (screen_changed, autostart_changed) = {
         let mut current = shared.settings.lock().unwrap();
-        let screen_changed = current.screen != settings.screen;
+        let screen_changed = current.screen != settings.screen || current.placement != settings.placement;
+        island::set_placement(&settings.placement);
         let autostart_changed = current.autostart != settings.autostart;
         *current = settings.clone();
         (screen_changed, autostart_changed)
@@ -288,6 +290,52 @@ async fn webhook_send(slot: String, kind: String, text: String) -> Result<u16, S
     result
 }
 
+/// The desktop wallpaper's bytes (raw IPC), to match a style to it. On a click only.
+#[tauri::command]
+async fn wallpaper_image() -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(desktop::wallpaper)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(tauri::ipc::Response::new)
+}
+
+/// What's playing, from the OS media session (Windows) or MPRIS (Linux).
+#[tauri::command]
+async fn now_playing() -> Result<Option<desktop::NowPlaying>, String> {
+    tauri::async_runtime::spawn_blocking(platform::now_playing).await.map_err(|e| e.to_string())?
+}
+
+/// Play / pause, next, previous — the island's media buttons.
+#[tauri::command]
+async fn media_control(action: String) -> Result<(), String> {
+    log::line(format!("media {action}"));
+    tauri::async_runtime::spawn_blocking(move || platform::media_control(&action)).await.map_err(|e| e.to_string())?
+}
+
+/// `docker ps --all`, read-only, only while the Docker card is open.
+#[tauri::command]
+async fn docker_containers() -> Result<Vec<desktop::Container>, String> {
+    tauri::async_runtime::spawn_blocking(desktop::docker_ps).await.map_err(|e| e.to_string())?
+}
+
+/// One spoken sentence → text (push-to-talk). Windows speech recognition only.
+#[tauri::command]
+async fn dictate() -> Result<String, String> {
+    log::line("dictation started (user held the talk button)".to_string());
+    tauri::async_runtime::spawn_blocking(platform::dictate).await.map_err(|e| e.to_string())?
+}
+
+/// Place search for the weather card (Open-Meteo, only once the user turns weather on).
+#[tauri::command]
+async fn weather_places(query: String) -> Result<Vec<desktop::Place>, String> {
+    desktop::geocode(&query).await
+}
+
+#[tauri::command]
+async fn weather_now(latitude: f64, longitude: f64) -> Result<desktop::Weather, String> {
+    desktop::weather(latitude, longitude).await
+}
+
 /// Checks the stored Anthropic key against the API. Only a status comes back.
 #[tauri::command]
 async fn claude_check_key() -> claude::KeyCheck {
@@ -409,6 +457,7 @@ fn open_settings_window(app: AppHandle) {
 pub fn run() {
     platform::prepare_environment();
     let loaded = settings::load();
+    island::set_placement(&loaded.placement);
     let gate = Arc::new(PollGate::new());
 
     tauri::Builder::default()
@@ -448,6 +497,13 @@ pub fn run() {
             claude_insight,
             project_probe,
             webhook_send,
+            wallpaper_image,
+            now_playing,
+            media_control,
+            docker_containers,
+            dictate,
+            weather_places,
+            weather_now,
             ingest_screenshot,
             secret_set,
             secret_clear,

@@ -275,3 +275,84 @@ pub fn battery() -> Option<(u8, bool)> {
     }
     Some((s.BatteryLifePercent.min(100), s.ACLineStatus == 1))
 }
+
+// ── Desktop awareness (desktop.rs) ────────────────────────────────────────────
+
+use crate::desktop::NowPlaying;
+use ::windows::Media::Control::{
+    GlobalSystemMediaTransportControlsSession as MediaSession,
+    GlobalSystemMediaTransportControlsSessionManager as MediaManager,
+    GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
+};
+
+/// The wallpaper path Windows itself reports.
+pub fn wallpaper_path() -> Option<PathBuf> {
+    use ::windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETDESKWALLPAPER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS};
+    let mut buf = [0u16; 1024];
+    unsafe {
+        SystemParametersInfoW(SPI_GETDESKWALLPAPER, buf.len() as u32, Some(buf.as_mut_ptr().cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)).ok()?;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    if len == 0 {
+        return None;
+    }
+    let p = PathBuf::from(String::from_utf16_lossy(&buf[..len]));
+    p.is_file().then_some(p)
+}
+
+fn media_session() -> Result<Option<MediaSession>, String> {
+    let manager = MediaManager::RequestAsync().and_then(|op| op.get()).map_err(|e| e.message().to_string())?;
+    Ok(manager.GetCurrentSession().ok())
+}
+
+/// What Windows' media overlay knows: any app that reports to it (Spotify,
+/// browsers, the Media Player…).
+pub fn now_playing() -> Result<Option<NowPlaying>, String> {
+    let Some(session) = media_session()? else { return Ok(None) };
+    let props = session.TryGetMediaPropertiesAsync().and_then(|op| op.get()).map_err(|e| e.message().to_string())?;
+    let playing = session
+        .GetPlaybackInfo()
+        .and_then(|i| i.PlaybackStatus())
+        .map(|s| s == PlaybackStatus::Playing)
+        .unwrap_or(false);
+    let source = session.SourceAppUserModelId().map(|s| s.to_string()).unwrap_or_default();
+    let source = source.rsplit(['\\', '!']).next().unwrap_or("").trim_end_matches(".exe").to_string();
+    Ok(Some(NowPlaying {
+        title: props.Title().map(|s| s.to_string()).unwrap_or_default(),
+        artist: props.Artist().map(|s| s.to_string()).unwrap_or_default(),
+        playing,
+        source,
+    }))
+}
+
+pub fn media_control(action: &str) -> Result<(), String> {
+    let session = media_session()?.ok_or("Nothing is playing.")?;
+    let op = match action {
+        "toggle" => session.TryTogglePlayPauseAsync(),
+        "next" => session.TrySkipNextAsync(),
+        "previous" => session.TrySkipPreviousAsync(),
+        _ => return Err("Unknown action.".into()),
+    };
+    op.and_then(|o| o.get()).map(|_| ()).map_err(|e| e.message().to_string())
+}
+
+/// One utterance through Windows speech recognition. Needs the microphone
+/// allowed for desktop apps (Settings → Privacy → Microphone) and, for
+/// dictation, "Online speech recognition" (Settings → Privacy → Speech).
+pub fn dictate() -> Result<String, String> {
+    use ::windows::Media::SpeechRecognition::{SpeechRecognitionResultStatus, SpeechRecognizer};
+    let explain = |e: ::windows::core::Error| -> String {
+        match e.code().0 as u32 {
+            0x8004_5509 => "Turn on Online speech recognition in Windows Settings → Privacy → Speech.".into(),
+            0x8007_0005 => "Allow microphone access for desktop apps in Windows Settings → Privacy → Microphone.".into(),
+            _ => format!("Speech recognition failed: {}", e.message()),
+        }
+    };
+    let recognizer = SpeechRecognizer::new().map_err(explain)?;
+    recognizer.CompileConstraintsAsync().and_then(|op| op.get()).map_err(explain)?;
+    let result = recognizer.RecognizeAsync().and_then(|op| op.get()).map_err(explain)?;
+    if result.Status().map_err(explain)? != SpeechRecognitionResultStatus::Success {
+        return Err("Didn't catch that.".into());
+    }
+    Ok(result.Text().map(|t| t.to_string()).unwrap_or_default())
+}

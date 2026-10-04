@@ -30,6 +30,13 @@ pub struct Settings {
     /// webhook addresses and keys stay in the OS vault.
     #[serde(default)]
     pub prefs: serde_json::Value,
+    /// Where on the top edge the island sits: "center", "left" or "right".
+    #[serde(default = "default_placement")]
+    pub placement: String,
+}
+
+fn default_placement() -> String {
+    "center".into()
 }
 
 fn default_model() -> String {
@@ -55,6 +62,7 @@ impl Default for Settings {
             model: default_model(),
             onboarded: false,
             prefs: serde_json::Value::Null,
+            placement: default_placement(),
         }
     }
 }

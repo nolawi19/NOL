@@ -153,6 +153,20 @@ pub fn screen_info(app: &AppHandle, pref: &str) -> ScreenInfo {
     }
 }
 
+/// Where on the top edge: 0 centre, 1 left, 2 right (Settings → Display).
+pub static PLACEMENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// Gap between the island and a screen corner, logical px.
+pub const CORNER_MARGIN: f64 = 16.0;
+
+pub fn set_placement(placement: &str) {
+    let v = match placement {
+        "left" => 1,
+        "right" => 2,
+        _ => 0,
+    };
+    PLACEMENT.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Places and sizes the window. `collapsed` picks the wake strip instead of the panel.
 pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let Some(win) = window(app) else { return };
@@ -165,7 +179,14 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let (lw, lh) = if collapsed { (STRIP_W, STRIP_H) } else { (PANEL_W, PANEL_H) };
     let pw = (lw * scale).round().max(1.0) as u32;
     let ph = (lh * scale).round().max(1.0) as u32;
-    let x = mp.x + (ms.width as i32 - pw as i32) / 2;
+    let margin = (CORNER_MARGIN * scale).round() as i32;
+    let x = match PLACEMENT.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => mp.x + margin,
+        2 => mp.x + ms.width as i32 - pw as i32 - margin,
+        _ => mp.x + (ms.width as i32 - pw as i32) / 2,
+    };
+    #[cfg(target_os = "linux")]
+    crate::platform::apply_layer_placement(&win, margin);
     let y = mp.y;
 
     // GTK never sizes a non-resizable window below its natural size (200 px

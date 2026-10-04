@@ -20,6 +20,12 @@ pub const KNOWN_KEYS: &[&str] = &[
     "webhook-1",
     "webhook-2",
     "webhook-3",
+    "sentry-token",
+    "sentry-org",
+    "linear-api-key",
+    "jira-site",
+    "jira-email",
+    "jira-token",
 ];
 
 fn entry(key: &str) -> Option<Entry> {

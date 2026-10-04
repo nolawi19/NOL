@@ -14,7 +14,9 @@
 //!   island is the whole point. No answer means empty stdout, and Claude Code
 //!   asks in the terminal exactly as if Coucou were not installed.
 //!
-//! Usage: `coucou-hook <EventName>` (the name is also read from the JSON).
+//! Usage: `coucou-hook <EventName>` (the name is also read from the JSON), or
+//! `coucou-hook --statusline` as Claude Code's status line: it prints a short
+//! line for the terminal, then forwards the session's cost to Coucou.
 
 use std::io::{Read, Write};
 use std::sync::mpsc;
@@ -45,6 +47,9 @@ mod unix;
 use unix::connect;
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--statusline") {
+        status_line();
+    }
     let Some((payload, event)) = read_event() else { std::process::exit(0) };
 
     let waits_for_answer = event == "PermissionRequest";
@@ -68,6 +73,53 @@ fn main() {
     }
     // Nothing printed: Claude Code asks in the terminal, as if we were not here.
     std::process::exit(0);
+}
+
+/// Claude Code's status line. The terminal gets its line first — printing
+/// never waits on Coucou — then only the numbers go to the island: cost,
+/// duration, lines changed, model. Nothing from the transcript.
+fn status_line() -> ! {
+    let mut raw = Vec::new();
+    let _ = std::io::stdin().read_to_end(&mut raw);
+    if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        raw.drain(..3);
+    }
+    let v: serde_json::Value = serde_json::from_slice(&raw).unwrap_or_default();
+    let (line, payload) = status_payload(&v);
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "{line}");
+    let _ = out.flush();
+    let (tx, rx) = mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let _ = talk(&payload, false);
+        let _ = tx.send(());
+    });
+    let _ = rx.recv_timeout(FIRE_AND_FORGET_BUDGET);
+    std::process::exit(0);
+}
+
+/// (terminal line, payload for the island) from the status line JSON.
+fn status_payload(v: &serde_json::Value) -> (String, String) {
+    let f = |p: &str| v.pointer(p).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+    let s = |p: &str| v.pointer(p).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+    let cost = f("/cost/total_cost_usd");
+    let model = s("/model/display_name");
+    let line = if model.is_empty() { format!("${cost:.2}") } else { format!("{model} · ${cost:.2}") };
+    let dir = s("/workspace/current_dir");
+    let cwd = if dir.is_empty() { s("/cwd") } else { dir };
+    let payload = serde_json::json!({
+        "hook_event_name": "StatusLine",
+        "session_id": s("/session_id"),
+        "cwd": cwd,
+        "model": model,
+        "cost_usd": cost,
+        "duration_ms": f("/cost/total_duration_ms"),
+        "api_duration_ms": f("/cost/total_api_duration_ms"),
+        "lines_added": f("/cost/total_lines_added"),
+        "lines_removed": f("/cost/total_lines_removed"),
+        "exceeds_200k_tokens": v.get("exceeds_200k_tokens").and_then(serde_json::Value::as_bool).unwrap_or(false),
+    });
+    (line, format!("{payload}\n"))
 }
 
 /// The documented PermissionRequest output. Anything we do not recognise prints
@@ -243,6 +295,20 @@ mod tests {
         assert!(decision_json("maybe").is_none());
         // The shape the app used to send must not be mistaken for a decision.
         assert!(decision_json(r#"{"permissionDecision":"allow"}"#).is_none());
+    }
+
+    #[test]
+    fn status_line_keeps_only_the_numbers() {
+        let v = serde_json::json!({
+            "session_id": "s1", "transcript_path": "/secret/t.jsonl",
+            "model": { "display_name": "Opus" },
+            "workspace": { "current_dir": "/p" },
+            "cost": { "total_cost_usd": 0.4213, "total_duration_ms": 1000, "total_lines_added": 12 }
+        });
+        let (line, payload) = status_payload(&v);
+        assert_eq!(line, "Opus · $0.42");
+        assert!(payload.contains("\"cost_usd\":0.4213"));
+        assert!(!payload.contains("transcript"));
     }
 
     #[test]
