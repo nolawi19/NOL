@@ -5,9 +5,11 @@
 
 import { h, clear } from "./dom";
 import { LINE } from "./icons";
-import { State, type TimelineEntry } from "../core/state";
-import { primaryPhase, STATE_COLOR } from "../core/activity";
-import { sendTo } from "../core/bridge";
+import { CORE_STATE_LABEL, State, type TimelineEntry } from "../core/state";
+import { formatDuration, primaryPhase, STATE_COLOR } from "../core/activity";
+import { Bridge, sendTo, type ProjectInfo, type SystemStats } from "../core/bridge";
+import { Session, WORK_MODE_LABEL } from "../core/session";
+import { COMMAND_CLASS_LABEL } from "../core/risk";
 import { shortFingerprint, thisDevice } from "../core/devices";
 import { icon } from "./ui";
 import type { ViewActions, ViewHost } from "./views";
@@ -66,15 +68,29 @@ export function buildCenter(actions: ViewActions): ViewHost {
     icon(LINE.activity, 14, 2),
     h("span", { text: "Nothing yet. Claude Code events, permissions, integrations and chats appear here as they happen." }),
   );
+  // "Now": the core's state by name, the kind of work, what's running, where.
+  const nowState = h("b", { class: "cc-state" });
+  const nowMode = h("span", { class: "cc-mode" });
+  const nowRun = h("span", { class: "cc-run" });
+  const nowProj = h("span", { class: "cc-proj" });
+  const now = h(
+    "div",
+    { class: "cc-now" },
+    h("div", { class: "cc-now-line" }, nowState, nowMode, nowRun),
+    h("div", { class: "cc-now-line sub" }, nowProj),
+  );
+  const allBtn = h("button", { class: "cc-all", type: "button", title: "Open the full timeline" }, h("span", { text: "Timeline" }), icon(LINE.chevronRight, 9, 2.4));
+  allBtn.addEventListener("click", () => actions.setView("timeline"));
   const activity = h(
     "div",
     { class: "cc-activity card fx-glass" },
-    h("div", { class: "cc-head" }, h("span", { class: "cc-title", text: "Live activity" }), phaseLabel),
+    now,
+    h("div", { class: "cc-head" }, h("span", { class: "cc-title", text: "Live activity" }), phaseLabel, allBtn),
     list,
   );
 
-  const claude = tile("Claude Code", LINE.terminal, () => actions.setView("overview"));
-  const chat = tile("Claude chat", LINE.sparkle, () => actions.setView("prompt"));
+  const claude = tile("Claude", LINE.terminal, () => actions.setView("overview"));
+  const chat = tile("Chat", LINE.sparkle, () => actions.setView("prompt"));
   const requests = tile("Requests", LINE.shield, () => {
     if (State.pendingApproval) actions.setView("approval");
   });
@@ -82,12 +98,14 @@ export function buildCenter(actions: ViewActions): ViewHost {
     if (State.screen.active) void sendTo("settings", "screen-share-stop", null);
     else actions.openSettingsPage("screen");
   });
-  const computer = tile("This computer", LINE.monitor);
+  const terminal = tile("Terminal", LINE.terminal, () => actions.setView("timeline"));
+  const system = tile("System", LINE.monitor);
+  const automations = tile("Rules", LINE.bolt, () => actions.openSettingsPage("automations"));
   const devices = tile("Devices", LINE.phone, () => actions.openSettingsPage("devices"));
   const tiles = h(
     "div",
-    { class: "cc-tiles" },
-    claude.el, chat.el, requests.el, screen.el, computer.el, devices.el,
+    { class: "cc-tiles eight" },
+    claude.el, requests.el, terminal.el, system.el, chat.el, screen.el, automations.el, devices.el,
   );
 
   const el = h("div", { class: "view center" }, h("div", { class: "cc-grid" }, activity, tiles));
@@ -95,6 +113,29 @@ export function buildCenter(actions: ViewActions): ViewHost {
   let shownIds = new Set<number>();
   let clock: number | null = null;
   let fingerprint = "";
+  /** Polled every 2 s while the center is on screen, never otherwise. */
+  let stats: SystemStats | null = null;
+  let statsTimer: number | null = null;
+  let project: ProjectInfo | null = null;
+  let probedCwd: string | null = null;
+
+  async function pollStats() {
+    stats = await Bridge.systemStats();
+    // The core breathes a little faster when the machine is busy.
+    const cpu = stats?.cpuPercent;
+    document.documentElement.style.setProperty("--energy", cpu == null ? "0" : (cpu / 100).toFixed(2));
+    State.notify();
+  }
+
+  function probe() {
+    const cwd = State.tasks.find((t) => t.id === "integration_claude")?.sessionCwd ?? null;
+    if (!cwd || cwd === probedCwd) return;
+    probedCwd = cwd;
+    void Bridge.projectProbe(cwd).then((p) => {
+      project = p;
+      State.notify();
+    });
+  }
 
   function refreshTimes() {
     for (const t of list.querySelectorAll<HTMLTimeElement>("time[data-at]")) {
@@ -105,7 +146,15 @@ export function buildCenter(actions: ViewActions): ViewHost {
   return {
     el,
     show() {
-      if (clock == null) clock = window.setInterval(refreshTimes, 10_000);
+      if (clock == null) clock = window.setInterval(() => {
+        refreshTimes();
+        State.notify();
+      }, 1000);
+      if (statsTimer == null) {
+        void pollStats();
+        statsTimer = window.setInterval(() => void pollStats(), 2000);
+      }
+      probe();
       if (!fingerprint) {
         void thisDevice()
           .then((d) => {
@@ -120,6 +169,9 @@ export function buildCenter(actions: ViewActions): ViewHost {
     hide() {
       if (clock != null) window.clearInterval(clock);
       clock = null;
+      if (statsTimer != null) window.clearInterval(statsTimer);
+      statsTimer = null;
+      document.documentElement.style.setProperty("--energy", "0");
     },
     sync() {
       // Timeline: newest first, new entries slide in.
@@ -164,13 +216,61 @@ export function buildCenter(actions: ViewActions): ViewHost {
       const sc = State.screen;
       screen.set(sc.active ? "live" : "off", sc.active ? "ACTIVE" : "Off", sc.active ? "Click to stop" : "Share from Settings");
 
-      // This computer
+      // Now
+      probe();
+      const cs = State.coreState;
+      nowState.textContent = CORE_STATE_LABEL[cs];
+      nowState.dataset.state = cs;
+      nowState.style.setProperty("--c", phase?.color ?? STATE_COLOR.idle);
+      const snap = Session.snapshot();
+      nowMode.textContent = WORK_MODE_LABEL[snap.workMode];
+      nowMode.hidden = snap.workMode === "idle";
+      const run = snap.running;
+      nowRun.textContent = run
+        ? `${run.commandClass ? COMMAND_CLASS_LABEL[run.commandClass] : run.tool} · ${formatDuration(Date.now() - run.start)}`
+        : "";
+      nowRun.title = run?.target ?? "";
+      const projName = project?.name ?? (task && task.name !== "VS Code" ? task.name : null);
+      nowProj.textContent = projName
+        ? [
+          projName,
+          project?.branch ? `⎇ ${project.branch}` : project?.detached ? "⎇ detached" : project && !project.git ? "no git" : null,
+          project?.markers.length ? project.markers.slice(0, 3).join(", ") : null,
+        ].filter(Boolean).join(" · ")
+        : "No Claude Code session yet";
+
+      // Terminal: what's running, else how the last command went.
+      const last = [...Session.records].reverse().find((r) => r.commandClass != null);
+      if (run?.commandClass) {
+        terminal.set("live", `${COMMAND_CLASS_LABEL[run.commandClass]} · ${formatDuration(Date.now() - run.start)}`, run.target);
+      } else if (last) {
+        const took = last.end ? formatDuration(last.end - last.start) : "";
+        terminal.set(last.outcome === "failed" ? "bad" : "ok", `${last.outcome === "failed" ? "Failed" : "Done"}${took ? ` · ${took}` : ""}`, last.target);
+      } else {
+        terminal.set("off", "No commands", "Shell commands Claude runs appear here");
+      }
+
+      // This computer: only what the OS reports.
       const d = State.display;
-      computer.set(
-        "ok",
-        d ? `${Math.round(d.width * d.scale)}×${Math.round(d.height * d.scale)}` : "This computer",
-        d ? `${Math.round(d.scale * 100)}% scale${fingerprint ? ` · ${fingerprint}` : ""}` : fingerprint || "Identity loading…",
-      );
+      if (stats) {
+        const mem = stats.memTotal && stats.memUsed != null ? Math.round((stats.memUsed / stats.memTotal) * 100) : null;
+        const cpu = stats.cpuPercent == null ? "…" : `${Math.round(stats.cpuPercent)}%`;
+        const up = stats.uptimeSecs != null ? `up ${formatDuration(stats.uptimeSecs * 1000)}` : null;
+        const bat = stats.batteryPercent != null ? `battery ${stats.batteryPercent}%${stats.charging ? " ⚡" : ""}` : null;
+        system.set(
+          (stats.cpuPercent ?? 0) > 85 || (mem ?? 0) > 90 ? "warn" : "ok",
+          `CPU ${cpu}${mem != null ? ` · RAM ${mem}%` : ""}`,
+          [bat, up, d ? `${Math.round(d.width * d.scale)}×${Math.round(d.height * d.scale)}` : null].filter(Boolean).join(" · ") || fingerprint,
+        );
+      } else {
+        system.set("ok", d ? `${Math.round(d.width * d.scale)}×${Math.round(d.height * d.scale)}` : "This computer", fingerprint || "Reading…");
+      }
+
+      // Automations
+      const rules = State.prefs.automations;
+      const enabled = rules.filter((r) => r.enabled).length;
+      const lastRun = State.timeline.find((e) => e.cat === "automation");
+      automations.set(enabled ? "ok" : "off", enabled ? `${enabled} on` : rules.length ? "All off" : "None", lastRun ? `${lastRun.text.replace(/^Automation · /, "")} · ${ago(lastRun.at)}` : "Create rules in Settings");
 
       // Devices: honest — no mobile app exists yet.
       devices.set("off", "No phone", "Needs Coucou Mobile");

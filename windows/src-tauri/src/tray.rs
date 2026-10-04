@@ -1,4 +1,4 @@
-// Notification-area icon: Open, Settings, Pause, Quit.
+// Notification-area icon: Open, Command palette, Hide, Settings, Pause, Quit.
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -10,13 +10,15 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Coucou", true, None::<&str>)?;
     // The island never hides on its own; this is one of the ways to ask it to.
     let hide = MenuItem::with_id(app, "hide", "Hide island", true, None::<&str>)?;
+    // Opens the island on its command palette (the same as Ctrl+K inside it).
+    let palette = MenuItem::with_id(app, "palette", "Command palette…", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let pause = MenuItem::with_id(app, "pause", "Pause", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
 
-    let menu = Menu::with_items(app, &[&open, &hide, &sep1, &settings, &pause, &sep2, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &palette, &hide, &sep1, &settings, &pause, &sep2, &quit])?;
 
     let mut builder = TrayIconBuilder::with_id("coucou")
         .tooltip("Coucou")

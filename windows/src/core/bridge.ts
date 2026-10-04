@@ -101,6 +101,17 @@ export const Bridge = {
   secretSet: (key: string, value: string) => callOrThrow<void>("secret_set", { key, value }),
   secretClear: (key: string) => callOrThrow<void>("secret_clear", { key }),
 
+  // ── Awareness, automations, insights ──────────────────────────────────────
+  /** CPU, memory, uptime and battery as the OS reports them. Asked for, never pushed. */
+  systemStats: () => call<SystemStats>("system_stats"),
+  /** Branch and project markers for a folder. Reads only .git/HEAD. */
+  projectProbe: (path: string) => call<ProjectInfo>("project_probe", { path }),
+  /** Posts to a webhook saved in the vault (webhook-1..3). Returns the HTTP status. */
+  webhookSend: (slot: string, kind: WebhookKind, text: string) =>
+    callOrThrow<number>("webhook_send", { slot, kind, text }),
+  /** A standalone question to Claude (summary, explanation). Never touches the chat. */
+  claudeInsight: (prompt: string) => callOrThrow<{ text: string }>("claude_insight", { prompt }),
+
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
   /** Opens the configured n8n instance in the browser. */
@@ -120,6 +131,31 @@ export interface IntegrationUpdate {
 export type ChatContext =
   | { kind: "file"; name: string; path: string }
   | { kind: "window"; appName: string; title: string; url?: string };
+
+export interface SystemStats {
+  /** Null on the first sample: usage needs two readings. */
+  cpuPercent: number | null;
+  cpuCount: number;
+  memTotal: number | null;
+  memUsed: number | null;
+  uptimeSecs: number | null;
+  /** Null when there is no battery (or the OS doesn't say). */
+  batteryPercent: number | null;
+  charging: boolean | null;
+  os: "windows" | "linux";
+}
+
+export interface ProjectInfo {
+  name: string;
+  path: string;
+  git: boolean;
+  branch: string | null;
+  detached: boolean;
+  /** Which well-known project files exist. Their contents are never read. */
+  markers: string[];
+}
+
+export type WebhookKind = "ntfy" | "discord" | "slack" | "json";
 
 export interface KeyCheck {
   status: "connected" | "missing" | "rejected" | "unreachable" | "error";

@@ -14,6 +14,11 @@ import { buildPrompt } from "./chat";
 import { buildCenter } from "./center";
 import { buildWelcome } from "./welcome";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
+import { buildBoot, buildInsight, buildPalette, buildTimeline } from "./expansion";
+import { MODES, type Mode } from "../core/prefs";
+import { REVERSIBILITY_LABEL, RISK_COLOR, RISK_LEVEL_LABEL } from "../core/risk";
+import { Session, shortSummary } from "../core/session";
+import type { MemoryItem } from "../core/memory";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { button, card, clock, icon, setIcon, stagger, statusChip, TextSwap, tintVars } from "./ui";
 
@@ -38,6 +43,17 @@ export interface ViewActions {
   /** Re-run the island's size animation after a view changed its own height. */
   relayout(): void;
   blip(): void;
+  setMode(mode: Mode): void;
+  /** Asks Claude for a summary of the session and shows it in the insight view. */
+  summarizeSession(): void;
+  /** Asks Claude what the pending permission request would do. */
+  explainApproval(): Promise<string>;
+  newChat(): void;
+  refreshIntegration(id: string): void;
+  /** Resolves false when memory is off or storage failed. */
+  saveToMemory(kind: MemoryItem["kind"], title: string, text: string, project: string | null): Promise<boolean>;
+  /** The startup check ended (or was skipped). */
+  bootDone(): void;
 }
 
 /** "delivered": the relay got it. "late": it had already timed out. "failed": no relay reached. */
@@ -97,7 +113,7 @@ const TABS: { view: IslandViewName; title: string; path: string }[] = [
 ];
 
 /** Views that already tell the user what is going on: no capsule over them. */
-const SELF_EXPLAINING = new Set<IslandViewName>(["approval", "question", "error", "finished", "confused", "greeting", "welcome"]);
+const SELF_EXPLAINING = new Set<IslandViewName>(["approval", "question", "error", "finished", "confused", "greeting", "welcome", "boot"]);
 
 export function tabIndex(view: IslandViewName): number {
   if (view === "empty") return 0;
@@ -117,6 +133,9 @@ export function buildHeader(actions: ViewActions): ViewHost {
 
   const gearIcon = svg(ICONS.gear, 14);
   const soundIcon = svg(ICONS.speakerOn, 14);
+  const searchBtn = h("button", { class: "hdr-btn search", type: "button", title: "Command palette (Ctrl+K)", "aria-label": "Command palette", onclick: () => go("palette") }, icon(LINE.search, 13, 2.2));
+  // Anything but Normal mode is shown, so nobody wonders why it's quiet.
+  const modeChip = h("button", { class: "mode-chip", type: "button", onclick: () => actions.openSettingsPage("modes") }, h("i"), h("span"));
   const gearBtn = h("button", { class: "hdr-btn gear", type: "button", title: "Quick settings", "aria-label": "Quick settings", onclick: () => go("settings") }, gearIcon);
   const soundBtn = h("button", { class: "hdr-btn sound", type: "button", title: "Mute", "aria-label": "Mute", onclick: () => actions.toggleSound() }, soundIcon);
   // Closing is always the user's call: these two are the only ways the open
@@ -163,7 +182,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     { id: "header" },
     h("div", { class: "tabs" }, indicator, ...tabEls),
     capsule,
-    h("div", { class: "header-actions" }, screenBadge, gearBtn, soundBtn, h("i", { class: "hdr-sep" }), collapseBtn, hideBtn),
+    h("div", { class: "header-actions" }, screenBadge, modeChip, searchBtn, gearBtn, soundBtn, h("i", { class: "hdr-sep" }), collapseBtn, hideBtn),
   );
 
   return {
@@ -184,6 +203,12 @@ export function buildHeader(actions: ViewActions): ViewHost {
       setIcon(soundIcon, muted ? ICONS.speakerOff : ICONS.speakerOn);
 
       screenBadge.classList.toggle("on", State.screen.active);
+      searchBtn.classList.toggle("on", v === "palette");
+      const mode = State.prefs.mode;
+      modeChip.classList.toggle("on", mode !== "normal" && !State.screen.active);
+      modeChip.dataset.mode = mode;
+      (modeChip.lastChild as HTMLElement).textContent = MODES[mode].title;
+      modeChip.title = `${MODES[mode].title} mode — ${MODES[mode].desc} Click to change.`;
 
       const phase = primaryPhase(State.tasks, State.focusId);
       const redundant =
@@ -456,13 +481,23 @@ function buildApproval(actions: ViewActions): ViewHost {
   const titleEl = h("span", { class: "v-title", text: "Permission needed" });
   const who = h("span", { class: "v-who" });
   const countdown = h("span", { class: "appr-count", title: "After this, Claude Code asks in the terminal" });
-  const head = h("div", { class: "v-head" }, badge, titleEl, who, h("span", { class: "grow" }), countdown);
+  const riskChip = h("span", { class: "risk-chip" });
+  const head = h("div", { class: "v-head" }, badge, titleEl, who, riskChip, h("span", { class: "grow" }), countdown);
 
   const toolIcon = icon(LINE.terminal, 10, 2.3);
   const toolName = h("span");
   const toolBadge = h("span", { class: "tool-badge" }, toolIcon, toolName);
   const code = h("div", { class: "code appr-code" });
   const target = h("div", { class: "appr-target" }, toolBadge, code);
+
+  // What the request would do — a reading aid, shown with "Details".
+  const riskSummary = h("div", { class: "risk-summary" });
+  const riskFlags = h("div", { class: "risk-flags" });
+  const riskMeta = h("div", { class: "risk-meta" });
+  const explainOut = h("div", { class: "risk-explain" });
+  const riskBox = h("div", { class: "risk-box" }, riskSummary, riskFlags, riskMeta, explainOut);
+  let explainFor: string | null = null;
+  const explainBtn = button("Explain", "ghost", () => void explain(), { icon: LINE.sparkle, title: "Ask Claude what this would do (uses your API key; sends only this request's text)" });
 
   const moreLabel = h("span", { text: "Show all" });
   const moreIcon = icon(LINE.chevronDown, 10, 2.4);
@@ -471,9 +506,9 @@ function buildApproval(actions: ViewActions): ViewHost {
 
   const deny = button("Deny", "secondary", () => decide("deny"), { icon: LINE.x, title: "Refuse this action" });
   const allow = button("Allow", "allow", () => decide("allow"), { icon: LINE.check, title: "Let Claude Code do this once" });
-  const row = h("div", { class: "actions" }, deny, allow, h("span", { class: "grow" }), more);
+  const row = h("div", { class: "actions" }, deny, allow, h("span", { class: "grow" }), explainBtn, more);
 
-  const body = stack(116, 16, head, target, row);
+  const body = stack(116, 16, head, target, riskBox, row);
   const shell = card("amber", body);
   shell.classList.add("approval-card");
   const el = h("div", { class: "view approval" }, shell);
@@ -534,6 +569,32 @@ function buildApproval(actions: ViewActions): ViewHost {
     actions.relayout();
   });
 
+  async function explain() {
+    const req = State.pendingApproval;
+    if (!req || explainFor === req.requestId) return;
+    explainFor = req.requestId;
+    explainBtn.disabled = true;
+    explainOut.dataset.state = "loading";
+    explainOut.textContent = "Asking Claude…";
+    if (!State.detailExpanded) {
+      State.detailExpanded = true;
+      State.notify();
+      actions.relayout();
+    }
+    try {
+      const text = await actions.explainApproval();
+      if (State.pendingApproval?.requestId !== req.requestId) return;
+      explainOut.dataset.state = "ready";
+      explainOut.textContent = text;
+    } catch (err) {
+      if (State.pendingApproval?.requestId !== req.requestId) return;
+      explainOut.dataset.state = "error";
+      explainOut.textContent = String((err as Error)?.message ?? err);
+      explainFor = null;
+      explainBtn.disabled = false;
+    }
+  }
+
   return {
     el,
     show() {
@@ -554,6 +615,31 @@ function buildApproval(actions: ViewActions): ViewHost {
         allow.disabled = false;
         for (const b of [deny, allow]) b.classList.remove("chosen", "sending");
         titleEl.textContent = "Permission needed";
+        explainFor = null;
+        explainBtn.disabled = false;
+        delete explainOut.dataset.state;
+        explainOut.textContent = "";
+        const risk = req.risk;
+        riskChip.hidden = !risk;
+        shell.dataset.risk = risk?.level ?? "unknown";
+        if (risk) {
+          riskChip.textContent = RISK_LEVEL_LABEL[risk.level];
+          riskChip.dataset.level = risk.level;
+          riskChip.style.setProperty("--rc", RISK_COLOR[risk.level]);
+          riskChip.title = risk.flags.length ? risk.flags.map((f) => f.label).join(" · ") : "Nothing risky found in the request text. Still read it.";
+          riskSummary.textContent = risk.summary;
+          riskFlags.replaceChildren(
+            ...risk.flags.map((f) => h("span", { class: "risk-flag", "data-w": String(f.weight), title: f.why, text: f.label })),
+          );
+          riskMeta.replaceChildren(
+            h("span", { class: `rev ${risk.reversibility}`, text: REVERSIBILITY_LABEL[risk.reversibility] }),
+            ...(risk.paths.length ? [h("span", { class: "risk-paths", title: risk.paths.join("\n"), text: risk.paths.slice(0, 3).join(" · ") })] : []),
+          );
+        } else {
+          riskSummary.textContent = "";
+          riskFlags.replaceChildren();
+          riskMeta.replaceChildren();
+        }
         (deny.querySelector(".btn-label") as HTMLElement).textContent = "Deny";
         (allow.querySelector(".btn-label") as HTMLElement).textContent = "Allow";
         ring.restart(req.timeoutMs, Date.now() - req.receivedAt);
@@ -574,11 +660,14 @@ function buildApproval(actions: ViewActions): ViewHost {
 
       const expanded = State.detailExpanded;
       code.classList.toggle("expanded", expanded);
-      moreLabel.textContent = expanded ? "Show less" : "Show all";
+      riskBox.classList.toggle("open", expanded);
+      const hasDetail = !!req?.risk;
+      moreLabel.textContent = expanded ? "Less" : hasDetail ? "Details" : "Show all";
       more.classList.toggle("open", expanded);
-      // Only offer "Show all" when the target really is cut off.
+      explainBtn.hidden = State.apiKeyPresent === false || !!shell.dataset.decided;
+      // Offer more only when there is more: a risk reading, or a cut-off target.
       requestAnimationFrame(() => {
-        more.hidden = !expanded && code.scrollHeight <= code.clientHeight + 1;
+        more.hidden = !expanded && !hasDetail && code.scrollHeight <= code.clientHeight + 1;
       });
     },
   };
@@ -651,10 +740,12 @@ function buildFinished(actions: ViewActions): ViewHost {
   const head = h("div", { class: "v-head" }, iconWrap, h("span", { class: "v-title", text: "Claude Code finished" }), who);
   const title = h("div", { class: "title clamp-2" });
   const meta = h("div", { class: "meta" });
+  const summarize = button("Summary", "secondary", () => actions.summarizeSession(), { icon: LINE.sparkle, title: "Ask Claude to summarise this session (uses your API key)" });
   const row = h(
     "div",
     { class: "actions" },
     button("Open in VS Code", "primary", () => actions.openTerminal(), { icon: LINE.external }),
+    summarize,
     button("Done", "secondary", () => actions.collapse()),
     h("span", { class: "grow" }),
     meta,
@@ -673,10 +764,19 @@ function buildFinished(actions: ViewActions): ViewHost {
       const task = State.focusTask;
       who.textContent = whoLabel(task);
       title.textContent = task?.steps.at(-1) ?? "Session finished";
-      const parts: string[] = [];
-      if (task?.toolCount) parts.push(`${task.toolCount} tool${task.toolCount === 1 ? "" : "s"}`);
-      if (task?.turnStart) parts.push(formatDuration(Date.now() - task.turnStart));
-      meta.textContent = parts.join(" · ");
+      const isClaude = task?.id === CLAUDE_ID;
+      summarize.style.display = isClaude && State.apiKeyPresent !== false ? "" : "none";
+      if (isClaude) {
+        // Written from the matched hook events: files, tools, failures, time.
+        const snap = Session.snapshot();
+        meta.textContent = shortSummary(snap);
+        meta.title = snap.filesChanged.length ? `Changed: ${snap.filesChanged.join(", ")}` : "";
+      } else {
+        const parts: string[] = [];
+        if (task?.toolCount) parts.push(`${task.toolCount} tool${task.toolCount === 1 ? "" : "s"}`);
+        if (task?.turnStart) parts.push(formatDuration(Date.now() - task.turnStart));
+        meta.textContent = parts.join(" · ");
+      }
     },
   };
 }
@@ -822,6 +922,10 @@ export function buildViews(
   map.set("prompt", buildPrompt(onChatHeightChange, (page) => actions.openSettingsPage(page)));
   map.set("center", buildCenter(actions));
   map.set("welcome", buildWelcome(actions));
+  map.set("palette", buildPalette(actions));
+  map.set("timeline", buildTimeline(actions));
+  map.set("insight", buildInsight(actions));
+  map.set("boot", buildBoot(() => actions.bootDone()));
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());
   map.set("choose", buildChoose(actions));

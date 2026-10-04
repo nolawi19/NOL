@@ -157,6 +157,46 @@ pub async fn send(
     Ok(ChatReply { text })
 }
 
+const INSIGHT_SYSTEM: &str = "You help a developer understand what their AI coding agent (Claude Code) is doing. \
+Be concrete and brief: at most 6 short lines of plain text, no markdown. \
+If something is risky or irreversible, say so first. Never invent facts that aren't in the input.";
+
+/// One standalone question to Claude — summaries and explanations the user
+/// clicked for. It never touches the chat's history. Only text the island
+/// put on screen is sent (event lines, a command, an error message).
+pub async fn insight(model: &str, prompt: String) -> Result<ChatReply, String> {
+    let key = secrets::get("anthropic-api-key")
+        .ok_or_else(|| "API key missing. Open settings.".to_string())?;
+    let prompt: String = prompt.chars().take(12_000).collect();
+    let body = json!({
+        "model": model,
+        "max_tokens": 700,
+        "system": INSIGHT_SYSTEM,
+        "fallbacks": "default",
+        "messages": [{ "role": "user", "content": [{ "type": "text", "text": prompt }] }],
+    });
+    let response = call(&key, &body).await?;
+    if response.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
+        return Err("Claude declined this one.".into());
+    }
+    let text = response
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    if text.trim().is_empty() {
+        return Err("No response text.".into());
+    }
+    Ok(ChatReply { text: text.trim().to_string() })
+}
+
 /// Result of checking the stored key against the API.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

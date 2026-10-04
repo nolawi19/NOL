@@ -60,6 +60,10 @@ async function main() {
       case "collapse":
         island.collapse();
         break;
+      case "palette":
+        setPaused(false);
+        island.alert("palette");
+        break;
       case "pause":
         setPaused(!State.paused);
         // Paused means paused: screen access ends too.
@@ -83,6 +87,7 @@ async function main() {
         tone: s.active ? "alert" : "info",
         icon: LINE.screen,
         color: s.active ? "#F4505E" : "#9AA3B2",
+        cat: "screen",
       });
       // Never hidden while active: make sure the indicator can be seen.
       if (s.active) island.reveal();
@@ -94,6 +99,10 @@ async function main() {
   // A screenshot taken in Settings → Screen, attached to the chat.
   await onEvent<{ name: string; path: string }>("chat-attach", (f) => island.attachFile(f.name, f.path));
   await onEvent<null>("show-welcome", () => island.showWelcome());
+  // Settings → Security center asks for the permission history (it lives here).
+  await onEvent<string>("timeline-query", (cat) => {
+    void sendTo("settings", "timeline-snapshot", State.timeline.filter((e) => e.cat === cat).slice(0, 50));
+  });
   await onEvent<null>("secrets-changed", () => void refreshKey());
 
   // The settings window writes preferences; apply them here without a restart.
@@ -109,12 +118,18 @@ async function main() {
 
   // First launch (or an unfinished setup) opens on the introduction; every
   // launch after that greets as before.
-  if (State.settings.onboarded) island.launch();
-  else island.showWelcome();
+  // The startup check is part of the greeting: real checks, a second or two,
+  // skippable, and left out entirely when motion is reduced.
+  const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches || document.documentElement.classList.contains("reduce-motion");
+  if (!State.settings.onboarded) island.showWelcome();
+  else if (State.prefs.startup.cinematic && !calm) island.boot();
+  else island.launch();
 
   // In a plain browser there is no wake strip behind the cursor: make the whole
   // page wake the island so the visuals can be checked with `npm run dev`.
   if (!IS_TAURI) {
+    // The dev preview drives views directly (never set inside the app).
+    (window as unknown as { __island: Island }).__island = island;
     document.addEventListener("click", () => Sound.resume(), { once: true });
   }
 }

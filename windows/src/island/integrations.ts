@@ -4,6 +4,8 @@
 
 import { onEvent, Bridge, type IntegrationUpdate } from "../core/bridge";
 import { Sound } from "../core/sound";
+import { Automation } from "../core/automation";
+import { MODES } from "../core/prefs";
 import { State } from "../core/state";
 import type { Island } from "./island";
 import { LINE } from "../views/icons";
@@ -69,6 +71,13 @@ function handle(island: Island, update: IntegrationUpdate) {
         tone: event.success ? "success" : "error",
         icon: event.success ? LINE.checkCircle : LINE.xCircle,
         color: event.success ? "#34D399" : "#F4505E",
+        cat: "integration",
+      });
+      Automation.fire(event.success ? "integration-success" : "integration-failure", {
+        project: task.name,
+        text: `${task.name} · ${event.label}`,
+        detail: event.detail ?? undefined,
+        view: "overview",
       });
       State.showFlash(
         `${task.name} · ${event.label}`,
@@ -77,7 +86,8 @@ function handle(island: Island, update: IntegrationUpdate) {
       );
       // Same as the Swift pollers: show the compact island so the badge is seen,
       // but never steal the screen for a successful deploy.
-      island.reveal();
+      // Presentation and focus modes: nothing appears by itself.
+      if (MODES[State.prefs.mode].autoOpen) island.reveal();
 
       const existing = clearTimers.get(update.id);
       if (existing != null) window.clearTimeout(existing);

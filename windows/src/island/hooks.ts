@@ -8,6 +8,10 @@ import { Sound } from "../core/sound";
 import { STATE_COLOR, kindIcon, toolKind, toolVerb } from "../core/activity";
 import { LINE } from "../views/icons";
 import { State, type AgentTask } from "../core/state";
+import { Automation } from "../core/automation";
+import { MODES } from "../core/prefs";
+import { analyzeRisk, RISK_LEVEL_LABEL } from "../core/risk";
+import { formatMs, Session } from "../core/session";
 import type { Island } from "./island";
 
 const CLAUDE_ID = "integration_claude";
@@ -27,6 +31,10 @@ interface HookPayload {
   tool_input?: Record<string, unknown>;
   /** Optional agent tag: lowercase, digits and hyphens, ≤ 24 chars. */
   coucou_agent?: string;
+  /** Pairs PreToolUse with its PostToolUse / PostToolUseFailure. */
+  tool_use_id?: string;
+  /** PostToolUseFailure: what went wrong. */
+  error?: unknown;
 }
 
 /** Same rule as HookServer.validateAgent on macOS. "claude" is reserved. */
@@ -179,8 +187,13 @@ function handleHook(island: Island, payload: HookPayload) {
 
   const focused = State.focusId === agentId;
 
-  /** Alerts force the island open; work events only reveal the compact island. */
+  /**
+   * Alerts force the island open; work events only reveal the compact island.
+   * Focus and presentation modes open nothing by themselves (permission
+   * requests don't go through here: they always open).
+   */
   const surface = (view: Parameters<Island["alert"]>[0], isAlert: boolean) => {
+    if (!MODES[State.prefs.mode].autoOpen) return;
     if (State.mode === "expanded") {
       if (isAlert) island.setView(view);
     } else if (isAlert) {
@@ -199,11 +212,18 @@ function handleHook(island: Island, payload: HookPayload) {
     }
   };
 
+  const project = isExternalAgent ? validAgent! : projectName;
+  /** Session tracking (durations, work mode, summaries) is for Claude Code. */
+  const tracked = !isExternalAgent;
+  if (tracked && name && name !== "SessionEnd") Session.begin(projectName, cwd || null);
+  const fire = (trigger: Parameters<typeof Automation.fire>[0], text: string, detail?: string, view?: Parameters<Island["alert"]>[0]) =>
+    Automation.fire(trigger, { project, text, detail, view });
+
   switch (name) {
     case "SessionStart":
       ensurePill();
       touchSession(agentId);
-      State.log({ text: "Session started", detail: projectName, tone: "info", icon: LINE.terminal, color: "#9AA3B2" });
+      State.log({ text: "Session started", detail: projectName, tone: "info", icon: LINE.terminal, color: "#9AA3B2", cat: "session", project });
       surface("overview", false);
       Sound.play("work");
       break;
@@ -222,7 +242,8 @@ function handleHook(island: Island, payload: HookPayload) {
       // The field is `prompt`; reading `message` meant this step was always blank.
       const asked = payload.prompt ?? payload.message;
       if (asked) State.appendStep(agentId, asked.slice(0, 60));
-      State.log({ text: "Prompt", detail: asked?.slice(0, 120), tone: "active", icon: LINE.sparkle, color: STATE_COLOR.thinking });
+      if (tracked) Session.prompted(asked ?? null);
+      State.log({ text: "Prompt", detail: asked?.slice(0, 120), tone: "active", icon: LINE.sparkle, color: STATE_COLOR.thinking, cat: "session", project });
       surface("overview", false);
       break;
     }
@@ -238,20 +259,42 @@ function handleHook(island: Island, payload: HookPayload) {
       const tool = payload.tool_name ?? "Tool";
       const step = stepLabel(tool, payload.tool_input ?? {});
       State.appendStep(agentId, step);
-      State.log({ text: step, tone: "active", icon: kindIcon(toolKind(tool)), color: STATE_COLOR.working });
+      if (tracked) Session.pre(tool, payload.tool_input ?? {}, payload.tool_use_id);
+      State.log({ text: step, tone: "active", icon: kindIcon(toolKind(tool)), color: STATE_COLOR.working, cat: "tool", project });
       surface("overview", false);
       break;
     }
 
-    case "PostToolUse":
+    case "PostToolUse": {
       State.updateTask(agentId, "working");
+      const rec = tracked ? Session.post(payload.tool_name ?? "", payload.tool_use_id, true) : null;
+      // Shell commands get their duration on the timeline once they finish.
+      if (rec?.commandClass && rec.end) {
+        const took = rec.end - rec.start;
+        if (took >= 1000) {
+          State.log({ text: `Done · ${rec.target.slice(0, 60)}`, detail: `${formatMs(took)} · exit OK`, tone: "success", icon: LINE.checkCircle, color: "#34D399", cat: "tool", project });
+        }
+        if (rec.commandClass === "deploy") fire("deploy-command-succeeded", `Deploy command finished`, rec.target, "overview");
+      }
       break;
+    }
 
-    case "PostToolUseFailure":
+    case "PostToolUseFailure": {
       State.updateTask(agentId, "working");
       State.appendStep(agentId, "⚠ failed");
-      State.log({ text: "Tool failed", tone: "error", icon: LINE.xCircle, color: STATE_COLOR.error });
+      const error = typeof payload.error === "string" ? payload.error : undefined;
+      const rec = tracked ? Session.post(payload.tool_name ?? "", payload.tool_use_id, false, error) : null;
+      const what = rec?.commandClass ? rec.target.slice(0, 60) : payload.tool_name ?? "Tool";
+      const took = rec?.end ? ` after ${formatMs(rec.end - rec.start)}` : "";
+      State.log({ text: `Failed · ${what}`, detail: (rec?.error ?? "") + took || undefined, tone: "error", icon: LINE.xCircle, color: STATE_COLOR.error, cat: "error", project });
+      fire("tool-failed", `${payload.tool_name ?? "Tool"} failed`, rec?.error ?? undefined, "overview");
+      if (rec?.commandClass) {
+        fire("command-failed", `Command failed: ${rec.target.slice(0, 80)}`, rec.error ?? undefined, "overview");
+        if (rec.commandClass === "test") fire("tests-failed", "Tests failed", `${rec.target}\n${rec.error ?? ""}`.trim(), "overview");
+        if (rec.commandClass === "build") fire("build-failed", "Build failed", `${rec.target}\n${rec.error ?? ""}`.trim(), "overview");
+      }
       break;
+    }
 
     case "Notification": {
       const message = payload.message ?? "";
@@ -262,17 +305,20 @@ function handleHook(island: Island, payload: HookPayload) {
       } else if (message.trim().endsWith("?")) {
         State.updateTask(agentId, "question");
         State.appendStep(agentId, message);
-        State.log({ text: "Question", detail: message, tone: "alert", icon: LINE.ask, color: STATE_COLOR.question });
+        State.log({ text: "Question", detail: message, tone: "alert", icon: LINE.ask, color: STATE_COLOR.question, cat: "session", project });
+        fire("question-asked", "Claude is asking a question", message, "question");
       }
       break;
     }
 
     case "Stop":
       State.updateTask(agentId, "finished");
-      State.log({ text: "Finished", detail: payload.message?.slice(0, 120), tone: "success", icon: LINE.checkCircle, color: STATE_COLOR.finished });
+      if (tracked) Session.settle();
+      State.log({ text: "Finished", detail: payload.message?.slice(0, 120), tone: "success", icon: LINE.checkCircle, color: STATE_COLOR.finished, cat: "session", project });
+      fire("session-finished", "Session finished", payload.message?.slice(0, 400), "finished");
       if (payload.message) State.appendStep(agentId, payload.message.slice(0, 60));
       Sound.play("finish");
-      if (focused) surface("finished", true);
+      if (focused && MODES[State.prefs.mode].autoOpen) surface("finished", true);
       else {
         State.setPillBadge(agentId, "finished");
         State.showFlash(`${taskById(agentId)?.name ?? "Session"} · finished`, STATE_COLOR.finished, "success");
@@ -289,9 +335,11 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "StopFailure":
       State.updateTask(agentId, "error");
-      State.log({ text: "Stopped on an error", detail: payload.message?.slice(0, 120), tone: "error", icon: LINE.xCircle, color: STATE_COLOR.error });
+      if (tracked) Session.settle();
+      State.log({ text: "Stopped on an error", detail: payload.message?.slice(0, 120), tone: "error", icon: LINE.xCircle, color: STATE_COLOR.error, cat: "error", project });
+      fire("session-failed", "Session stopped on an error", payload.message?.slice(0, 400), "error");
       Sound.play("error");
-      if (focused) surface("error", true);
+      if (focused && MODES[State.prefs.mode].autoOpen) surface("error", true);
       else {
         State.setPillBadge(agentId, "error");
         State.showFlash(`${taskById(agentId)?.name ?? "Session"} · stopped on an error`, STATE_COLOR.error, "error");
@@ -304,6 +352,7 @@ function handleHook(island: Island, payload: HookPayload) {
       } else {
         State.updateTask(agentId, "idle");
         clearSession();
+        Session.reset();
       }
       break;
 
@@ -337,6 +386,12 @@ function handleHook(island: Island, payload: HookPayload) {
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};
       const target = approvalTarget(input);
+      let risk = null;
+      try {
+        risk = analyzeRisk(tool, input, cwd || null);
+      } catch {
+        /* a reading aid only: the card works without it */
+      }
       State.pendingApproval = {
         requestId,
         sessionId: payload.session_id ?? "",
@@ -345,6 +400,8 @@ function handleHook(island: Island, payload: HookPayload) {
         target,
         receivedAt: Date.now(),
         timeoutMs: DECISION_WINDOW_MS,
+        risk,
+        cwd: cwd || null,
       };
       State.detailExpanded = false;
       // The relay's short ack window closes in 800 ms; everything below this
@@ -352,7 +409,17 @@ function handleHook(island: Island, payload: HookPayload) {
       if (requestId) void Bridge.approvalAck(requestId);
       State.updateTask(CLAUDE_ID, "approval");
       State.isPinned = true;
-      State.log({ text: "Permission requested", detail: State.pendingApproval.command, tone: "alert", icon: LINE.shield, color: STATE_COLOR.approval });
+      State.log({
+        text: risk && risk.level !== "low" ? `Permission requested · ${RISK_LEVEL_LABEL[risk.level]}` : "Permission requested",
+        detail: State.pendingApproval.command,
+        tone: "alert",
+        icon: LINE.shield,
+        color: STATE_COLOR.approval,
+        cat: "permission",
+        project,
+      });
+      // Automations may tell someone a request is waiting. None can answer it.
+      fire("permission-requested", `Permission requested: ${tool}`, State.pendingApproval.command, "approval");
       Sound.play("approval");
       if (focused) {
         island.alert("approval");
@@ -376,7 +443,7 @@ function handleHook(island: Island, payload: HookPayload) {
         State.updateTask(CLAUDE_ID, "question");
         State.appendStep(CLAUDE_ID, "Permission · answer in the terminal");
         State.setPillBadge(CLAUDE_ID, null);
-        State.log({ text: "Permission expired", detail: expired.command, tone: "alert", icon: LINE.hourglass, color: "#F5A524" });
+        State.log({ text: "Permission expired", detail: expired.command, tone: "alert", icon: LINE.hourglass, color: "#F5A524", cat: "permission", project });
         if (State.view === "approval") island.setView(State.defaultView());
         State.notify();
       }, APPROVAL_TIMEOUT_MS);

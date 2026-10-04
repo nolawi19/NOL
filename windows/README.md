@@ -46,7 +46,8 @@ installs for the current user only — no admin prompt.
 | Drag a file onto the island | Mochi turns into a box, swallows it, then offers to answer questions about it |
 | `Esc`, or the ⌃ button | Collapses the island to compact |
 | The ⤒ button, or tray → Hide island | Retracts it into the top edge |
-| Tray icon | Open, Settings…, Pause, Quit |
+| `Ctrl+K` in the island | Command palette |
+| Tray icon | Open, Command palette…, Hide island, Settings…, Pause, Quit |
 
 Everything else happens on its own: a Claude Code permission request opens the
 island with **Deny / Allow**, a finished session shows what it did, and
@@ -62,10 +63,21 @@ Code hooks, Anthropic key); it comes back until you finish it, and Settings →
 About → Replay shows it again. The ⊞ tab is the command center: live activity,
 requests, screen access, this computer and devices.
 
+**Ctrl+K** opens the command palette — every action, searchable. Permission
+requests carry a risk reading (deletions, privileges, network, secrets, paths
+outside the project, reversibility) and an optional "Explain" by Claude; they
+are still only ever answered by your click. The command center shows what is
+running right now, the project and branch, and this computer's CPU, memory and
+battery; the timeline keeps the last 200 events with filters and search. Modes
+(Focus, Silent, Presentation, Night), appearance, per-event sounds,
+automations (flash, sound, webhook to ntfy / Discord / Slack, Claude summary)
+and an opt-in memory live in Settings. The full map of what works and what
+each feature waits on is [`docs/FEATURES.md`](../docs/FEATURES.md).
+
 Settings → Screen can share a screen or window with Coucou — only after a
 confirmation and the system picker, with SCREEN ACCESS ACTIVE and Stop in the
 island for as long as it lasts — and attach one still to the chat. Settings →
-Devices and → Permissions show this computer's identity and everything Coucou
+Devices and → Security center show this computer's identity and everything Coucou
 can or might do, with what each depends on: see
 [`docs/CAPABILITIES.md`](../docs/CAPABILITIES.md) and
 [`docs/DEVICES.md`](../docs/DEVICES.md).

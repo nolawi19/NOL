@@ -2,6 +2,8 @@
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
+import { MODES, readPrefs, type Prefs } from "./prefs";
+import type { RiskReport } from "./risk";
 
 export type AgentSource = "claudeCode" | "n8n" | "agent";
 export type PillBadge = "approval" | "finished" | "error";
@@ -39,6 +41,10 @@ export interface ApprovalInfo {
   receivedAt: number;
   /** How long the island has before the terminal takes the question back, ms. */
   timeoutMs: number;
+  /** A reading of what the request would do (core/risk.ts). Advisory only. */
+  risk: RiskReport | null;
+  /** The folder the session runs in. */
+  cwd: string | null;
 }
 
 /** A short-lived line shown in the compact island ("Vercel · Deployment ready"). */
@@ -119,6 +125,12 @@ export interface Settings {
   model: string;
   /** The first-launch introduction has been completed. */
   onboarded: boolean;
+  /**
+   * Everything newer (modes, appearance, per-event sounds, automations,
+   * memory switches). Opaque to Rust; read through core/prefs.ts, which
+   * repairs anything missing or malformed.
+   */
+  prefs: unknown;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -134,6 +146,7 @@ export const DEFAULT_SETTINGS: Settings = {
   hooksInstalled: false,
   model: "claude-opus-5",
   onboarded: false,
+  prefs: null,
 };
 
 /** One line of the activity timeline (command center). */
@@ -147,7 +160,36 @@ export interface TimelineEntry {
   /** A line icon path (views/icons.ts LINE). */
   icon: string;
   color: string;
+  /** What the line is about, for the timeline's filters. */
+  cat: TimelineCat;
+  /** Project folder name, when the line belongs to a Claude Code session. */
+  project?: string;
 }
+
+export type TimelineCat = "session" | "tool" | "permission" | "error" | "integration" | "chat" | "screen" | "automation";
+
+/**
+ * What the energy core is showing, by name. Derived from the activity phase
+ * and how long things have been quiet — never set for show.
+ */
+export type CoreState =
+  | "dormant" | "awakening" | "idle" | "thinking" | "analyzing" | "executing" | "communicating"
+  | "warning" | "permission" | "success" | "failure" | "cooling";
+
+export const CORE_STATE_LABEL: Record<CoreState, string> = {
+  dormant: "Dormant",
+  awakening: "Awakening",
+  idle: "Idle",
+  thinking: "Thinking",
+  analyzing: "Analyzing",
+  executing: "Executing",
+  communicating: "Communicating",
+  warning: "Needs attention",
+  permission: "Waiting for permission",
+  success: "Success",
+  failure: "Failure",
+  cooling: "Cooling down",
+};
 
 /** Screen access, as reported by the window that holds the capture. */
 export interface ScreenAccess {
@@ -156,7 +198,8 @@ export interface ScreenAccess {
   since: number | null;
 }
 
-const TIMELINE_MAX = 40;
+const TIMELINE_MAX = 200;
+
 let timelineId = 1;
 
 type Listener = () => void;
@@ -201,6 +244,8 @@ class AppState {
   /** The display the island lives on, from Rust at boot (logical px). */
   display: { width: number; height: number; scale: number } | null = null;
   version = "";
+  /** The energy core's named state, set by the island from real activity. */
+  coreState: CoreState = "idle";
   private flashTimer: number | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
@@ -328,13 +373,31 @@ class AppState {
     this.loadIntegrationTasks();
   }
 
-  log(entry: Omit<TimelineEntry, "id" | "at">) {
-    this.timeline.unshift({ ...entry, id: timelineId++, at: Date.now() });
+  private prefsRaw: unknown = undefined;
+  private prefsCache: Prefs | null = null;
+
+  /** Modes, appearance, sounds, automations… always complete and valid. */
+  get prefs(): Prefs {
+    if (this.prefsCache == null || this.prefsRaw !== this.settings.prefs) {
+      this.prefsRaw = this.settings.prefs;
+      this.prefsCache = readPrefs(this.settings.prefs);
+    }
+    return this.prefsCache;
+  }
+
+  log(entry: Omit<TimelineEntry, "id" | "at" | "cat"> & { cat?: TimelineCat }) {
+    const cat: TimelineCat = entry.cat ?? (entry.tone === "error" ? "error" : "session");
+    this.timeline.unshift({ ...entry, cat, id: timelineId++, at: Date.now() });
     if (this.timeline.length > TIMELINE_MAX) this.timeline.length = TIMELINE_MAX;
   }
 
-  /** Shows a transient line in the compact island for a few seconds. */
-  showFlash(text: string, color: string, tone: Flash["tone"], ms = 6000) {
+  /**
+   * Shows a transient line in the compact island for a few seconds. Focus and
+   * presentation modes drop routine flashes; `important` ones (screen access,
+   * anything about a request waiting on the user) always show.
+   */
+  showFlash(text: string, color: string, tone: Flash["tone"], ms = 6000, important = false) {
+    if (!important && !MODES[this.prefs.mode].flashes) return;
     this.flash = { text, color, tone, at: performance.now() };
     if (this.flashTimer != null) window.clearTimeout(this.flashTimer);
     this.flashTimer = window.setTimeout(() => {

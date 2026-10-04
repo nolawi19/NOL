@@ -31,7 +31,7 @@ class SoundEngine {
       const ctx = new Ctor();
       this.ctx = ctx;
       const master = ctx.createGain();
-      master.gain.value = this.volume;
+      master.gain.value = this.volume * this.scale;
       master.connect(ctx.destination);
       this.master = master;
       await Promise.all(
@@ -77,15 +77,30 @@ class SoundEngine {
 
   setVolume(v: number) {
     this.volume = Math.max(0, Math.min(0.2, v));
-    if (this.master) this.master.gain.value = this.volume;
+    if (this.master) this.master.gain.value = this.volume * this.scale;
   }
 
   setEnabled(on: boolean) {
     this.enabled = on;
   }
 
-  play(name: SoundName | string) {
+  /**
+   * Mode and per-event switches (core/prefs.ts). Previews in Settings pass
+   * `force` so a muted category can still be listened to.
+   */
+  gate: ((name: string) => boolean) | null = null;
+
+  /** Night mode plays at half volume without touching the saved volume. */
+  setScale(scale: number) {
+    this.scale = scale;
+    if (this.master) this.master.gain.value = this.volume * this.scale;
+  }
+
+  private scale = 1;
+
+  play(name: SoundName | string, force = false) {
     if (!this.enabled) return;
+    if (!force && this.gate && !this.gate(name)) return;
     const ctx = this.ctx;
     const master = this.master;
     const buf = this.buffers.get(name);

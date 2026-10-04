@@ -24,6 +24,12 @@ pub struct Settings {
     /// written by older builds load, and show the introduction once.
     #[serde(default)]
     pub onboarded: bool,
+    /// UI preferences (modes, appearance, per-event sounds, automations,
+    /// memory switches). Opaque to Rust: stored and handed back as is, so the
+    /// front end can grow them without a schema change here. Never secrets —
+    /// webhook addresses and keys stay in the OS vault.
+    #[serde(default)]
+    pub prefs: serde_json::Value,
 }
 
 fn default_model() -> String {
@@ -48,6 +54,7 @@ impl Default for Settings {
             hooks_installed: false,
             model: default_model(),
             onboarded: false,
+            prefs: serde_json::Value::Null,
         }
     }
 }

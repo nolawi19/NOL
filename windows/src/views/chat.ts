@@ -13,6 +13,8 @@ import { ICONS, LINE } from "./icons";
 import { Bridge, type ChatContext } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
+import { Memory } from "../core/memory";
+import { Automation } from "../core/automation";
 import { icon, setIcon } from "./ui";
 import type { ViewHost } from "./views";
 
@@ -199,6 +201,8 @@ export function buildPrompt(onHeightChange: () => void, openSettings: (page: str
   const el = h("div", { class: "view chat" }, shell);
 
   let sending = false;
+  /** How many memory notes went with this conversation (0 = none). */
+  let memoryUsed = 0;
   let renderedKey = "";
   let renderedIds = new Set<number>();
   /** The last message that didn't go through, shown inline with Retry. */
@@ -222,7 +226,7 @@ export function buildPrompt(onHeightChange: () => void, openSettings: (page: str
     const message: ChatMessage = { id: nextId++, role: "user", content: query };
     State.chatHistory.push(message);
     State.stateOverride = "thinking";
-    State.log({ text: "Asked Claude", detail: query.slice(0, 120), tone: "active", icon: LINE.compose, color: "#A78BFA" });
+    State.log({ text: "Asked Claude", detail: query.slice(0, 120), tone: "active", icon: LINE.compose, color: "#A78BFA", cat: "chat" });
     State.notify();
     onHeightChange();
 
@@ -230,11 +234,29 @@ export function buildPrompt(onHeightChange: () => void, openSettings: (page: str
     const context: ChatContext | null =
       State.chatHistory.length === 1 && file ? { kind: "file", name: file.name, path: file.path } : null;
 
+    // Memory, when the user turned on both switches: saved notes go with the
+    // first message of a conversation only, and the chip above says so.
+    let sent = query;
+    const prefs = State.prefs;
+    if (State.chatHistory.length === 1 && prefs.memory.enabled && prefs.memory.useInChat) {
+      try {
+        const project = State.tasks.find((t) => t.id === "integration_claude")?.name ?? null;
+        const mem = await Memory.chatContext(project && project !== "VS Code" ? project : null);
+        if (mem) {
+          memoryUsed = mem.count;
+          sent = `Notes I saved earlier in Coucou (use them only if relevant):\n${mem.text}---\n${query}`;
+        }
+      } catch {
+        /* memory unavailable: send the message as typed */
+      }
+    }
+
     try {
-      const reply = await Bridge.chatSend(query, context);
+      const reply = await Bridge.chatSend(sent, context);
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
       State.apiConnected = true;
-      State.log({ text: "Claude replied", detail: reply.text.slice(0, 120), tone: "success", icon: LINE.sparkle, color: "#34D399" });
+      State.log({ text: "Claude replied", detail: reply.text.slice(0, 120), tone: "success", icon: LINE.sparkle, color: "#34D399", cat: "chat" });
+      Automation.fire("chat-replied", { project: "Chat", text: "Claude replied", detail: reply.text.slice(0, 400), view: "prompt" });
       Sound.play("finish");
     } catch (err) {
       // Rust drops the turn from its history on failure; mirror that so a
@@ -243,7 +265,7 @@ export function buildPrompt(onHeightChange: () => void, openSettings: (page: str
       const text = String(err).replace(/^Error:\s*/, "");
       failed = { query, message: text };
       if (/key|401|403/i.test(text)) State.apiConnected = false;
-      State.log({ text: "Chat failed", detail: text, tone: "error", icon: LINE.xCircle, color: "#F4505E" });
+      State.log({ text: "Chat failed", detail: text, tone: "error", icon: LINE.xCircle, color: "#F4505E", cat: "chat" });
       Sound.play("error");
     } finally {
       State.stateOverride = null;
@@ -307,7 +329,10 @@ export function buildPrompt(onHeightChange: () => void, openSettings: (page: str
       }
       newChat.classList.toggle("off", State.chatHistory.length === 0 && !file && !failed);
       const model = State.settings.model;
-      source.textContent = `Anthropic API · ${MODEL_NAMES[model] ?? model}`;
+      source.textContent = `Anthropic API · ${MODEL_NAMES[model] ?? model}${memoryUsed && State.chatHistory.length ? ` · memory (${memoryUsed})` : ""}`;
+      source.title = memoryUsed && State.chatHistory.length
+        ? `Messages go to api.anthropic.com with your own key. ${memoryUsed} saved note${memoryUsed === 1 ? "" : "s"} went with the first message (Settings → Memory).`
+        : "Messages go to api.anthropic.com with your own key";
       source.classList.toggle("bad", State.apiConnected === false);
 
       const thinking = State.stateOverride === "thinking";

@@ -233,3 +233,45 @@ pub fn set_activating(win: &WebviewWindow, activating: bool) {
 
 /// Click-through here is the poll's WS_EX_TRANSPARENT toggle, not a region.
 pub fn set_input_region(_win: &WebviewWindow, _rect: Option<(f64, f64, f64, f64)>) {}
+
+// ── System stats (Win32) ────────────────────────────────────────────────────
+
+/// (idle, total) in 100 ns units. Kernel time already includes idle time.
+pub fn cpu_times() -> Option<(u64, u64)> {
+    use ::windows::Win32::Foundation::FILETIME;
+    use ::windows::Win32::System::Threading::GetSystemTimes;
+    let mut idle = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    unsafe { GetSystemTimes(Some(&mut idle), Some(&mut kernel), Some(&mut user)).ok()? };
+    let v = |t: FILETIME| ((t.dwHighDateTime as u64) << 32) | t.dwLowDateTime as u64;
+    Some((v(idle), v(kernel) + v(user)))
+}
+
+/// (total, available) physical memory in bytes.
+pub fn memory() -> Option<(u64, u64)> {
+    use ::windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    unsafe { GlobalMemoryStatusEx(&mut status).ok()? };
+    Some((status.ullTotalPhys, status.ullAvailPhys))
+}
+
+pub fn uptime_secs() -> Option<u64> {
+    use ::windows::Win32::System::SystemInformation::GetTickCount64;
+    Some(unsafe { GetTickCount64() } / 1000)
+}
+
+/// (percent, plugged in) — None on desktops without a battery.
+pub fn battery() -> Option<(u8, bool)> {
+    use ::windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+    let mut s = SYSTEM_POWER_STATUS::default();
+    unsafe { GetSystemPowerStatus(&mut s).ok()? };
+    // BatteryFlag 128 = no system battery; 255 = unknown percentage.
+    if s.BatteryFlag & 128 != 0 || s.BatteryLifePercent == 255 {
+        return None;
+    }
+    Some((s.BatteryLifePercent.min(100), s.ACLineStatus == 1))
+}

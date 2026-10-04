@@ -193,6 +193,26 @@
   }
 }
 
+/* Settings → Appearance → Motion: "Reduced", and Night mode, calm Coucou the
+   same way even when the system doesn't ask for it. */
+:root.reduce-motion {
+  --dur-instant: 1ms;
+  --dur-fast: 1ms;
+  --dur-base: 1ms;
+  --dur-slow: 1ms;
+  --dur-slower: 1ms;
+  --dur-spring: 1ms;
+  --stagger: 0ms;
+}
+
+:root.reduce-motion *,
+:root.reduce-motion *::before,
+:root.reduce-motion *::after {
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 1ms !important;
+}
+
 /* Shared keyframes ───────────────────────────────────────────────────────── */
 
 @keyframes cc-rise-in {

@@ -14,7 +14,13 @@ import { pairedDevices, revokeDevice, shortFingerprint, thisDevice, type PairedD
 import { ScreenShare } from "../core/screen";
 import { installPointerFx } from "../fx/pointer";
 import { Sound } from "../core/sound";
-import { DEFAULT_SETTINGS, type Settings } from "../core/state";
+import { DEFAULT_SETTINGS, type Settings, type TimelineEntry } from "../core/state";
+import {
+  ACTION_TITLES, applyAppearance, MODE_ORDER, MODES, newRuleId, readPrefs, SOUND_CATEGORIES, TRIGGERS,
+  type ActionSpec, type AutomationRule, type CoreStyle, type MotionPref, type Prefs, type TriggerId, type WebhookSlot,
+} from "../core/prefs";
+import { Memory, type MemoryItem } from "../core/memory";
+import type { SoundName } from "../core/sound";
 import { h, clear, svg } from "../views/dom";
 import { LINE } from "../views/icons";
 import appIcon from "../../src-tauri/icons/128x128.png";
@@ -387,6 +393,10 @@ function secretField(def: FieldDef, onChange?: () => void): HTMLElement {
 
 interface Page {
   id: string;
+  /** Sidebar section. */
+  group: string;
+  /** Extra words the settings search should find this page by. */
+  keywords?: string;
   title: string;
   subtitle: string;
   icon: string;
@@ -833,6 +843,7 @@ function soundPage(): HTMLElement[] {
       row("Volume", null, volume),
       row("Preview", "Plays at the volume above.", sample),
     ),
+    soundEventsCard(),
   ];
 }
 
@@ -1134,29 +1145,533 @@ function permissionsPage(): HTMLElement[] {
   );
 
   return [
+    ...securityCards(),
     card("Allowed right now", "Grants last until you revoke them or quit Coucou. High-risk access is asked for every time.", grants),
     card("What Coucou can do", "Everything Coucou can or might do on this computer, how risky it is, and whether it exists yet. Nothing on this list acts without the permission shown.", matrix),
   ];
 }
 
+// ── Expansion: prefs ──────────────────────────────────────────────────────────
+
+let prefs: Prefs = readPrefs(null);
+
+/** Prefs travel inside settings.json like every other preference. */
+function savePrefs(mutate: (p: Prefs) => void, soon = false) {
+  const next = structuredClone(prefs);
+  mutate(next);
+  prefs = readPrefs(next);
+  settings.prefs = prefs;
+  applyAppearance(prefs);
+  if (soon) saveSoon();
+  else void save();
+}
+
+function radioChoices<T extends string>(
+  options: { id: T; title: string; desc: string; extra?: Node }[],
+  current: () => T,
+  onPick: (id: T) => void,
+  cls = "choices",
+): HTMLElement {
+  const items = options.map((o) => {
+    const el = h(
+      "button",
+      { class: "choice", type: "button", role: "radio", "data-id": o.id },
+      o.extra ?? null,
+      h("span", { class: "choice-text" }, h("b", { text: o.title }), h("span", { text: o.desc })),
+      h("span", { class: "radio" }, h("i")),
+    );
+    el.addEventListener("click", () => {
+      onPick(o.id);
+      paint();
+    });
+    return el;
+  });
+  function paint() {
+    for (const it of items) {
+      const on = it.dataset.id === current();
+      it.classList.toggle("on", on);
+      it.setAttribute("aria-checked", String(on));
+    }
+  }
+  paint();
+  return h("div", { class: cls, role: "radiogroup" }, ...items);
+}
+
+function select<T extends string>(value: T, options: [T, string][], label: string, onChange: (v: T) => void): HTMLSelectElement {
+  const el = h("select", { class: "select", "aria-label": label }) as HTMLSelectElement;
+  for (const [v, text] of options) {
+    const o = h("option", { value: v, text }) as HTMLOptionElement;
+    if (v === value) o.selected = true;
+    el.append(o);
+  }
+  el.addEventListener("change", () => onChange(el.value as T));
+  return el;
+}
+
+// Modes ───────────────────────────────────────────────────────────────────────
+
+function modesPage(): HTMLElement[] {
+  const options = MODE_ORDER.map((m) => ({
+    id: m,
+    title: MODES[m].title,
+    desc: MODES[m].desc,
+    extra: h("span", { class: `mode-glyph ${m}` }, ico(m === "night" ? LINE.moon : m === "silent" ? LINE.speaker : m === "focus" ? LINE.eyeOff : m === "presentation" ? LINE.screen : LINE.sparkle, 16, 1.9)),
+  }));
+  return [
+    card(
+      "Mode",
+      "How loud Coucou is right now. Change it here, or with Ctrl+K in the island.",
+      radioChoices(options, () => prefs.mode, (m) => savePrefs((p) => (p.mode = m)), "choices modes"),
+    ),
+    card(
+      "Always, in every mode",
+      null,
+      h(
+        "ul",
+        { class: "bullets" },
+        h("li", { text: "Permission requests open their card. Hiding one would leave Claude Code waiting on a question nobody can see." }),
+        h("li", { text: "Screen access stays visible while it is on." }),
+        h("li", { text: "Nothing is ever approved for you." }),
+      ),
+    ),
+  ];
+}
+
+// Appearance ─────────────────────────────────────────────────────────────────
+
+function appearancePage(): HTMLElement[] {
+  const a = prefs.appearance;
+  const pct = (v: number) => `${Math.round(v * 100)}%`;
+  return [
+    card(
+      "Light and glass",
+      "Applied instantly to the island and this window.",
+      row("Glass", "How much the panels frost over what's behind them.", slider(0.6, 1.4, 0.05, a.glass, pct, (v) => savePrefs((p) => (p.appearance.glass = v), true), "Glass")),
+      row("Glow", "The energy core and the island's underglow.", slider(0, 1.5, 0.05, a.glow, pct, (v) => savePrefs((p) => (p.appearance.glow = v), true), "Glow")),
+      row("Particles", "Drifting sparks around the core and in the introduction.", toggle(a.particles, "Particles", (v) => savePrefs((p) => (p.appearance.particles = v)))),
+    ),
+    card(
+      "Energy core",
+      "The light around Mochi that shows what Claude is doing.",
+      radioChoices<CoreStyle>(
+        [
+          { id: "orbit", title: "Orbit", desc: "Rings, sweep and orbiting sparks — the full core." },
+          { id: "pulse", title: "Pulse", desc: "Rings and halo, no orbiting sparks." },
+          { id: "minimal", title: "Minimal", desc: "Just the halo's colour." },
+        ],
+        () => prefs.appearance.core,
+        (c) => savePrefs((p) => (p.appearance.core = c)),
+      ),
+    ),
+    card(
+      "Motion",
+      null,
+      radioChoices<MotionPref>(
+        [
+          { id: "system", title: "Follow the system", desc: "Full motion unless your system asks for less." },
+          { id: "reduced", title: "Reduced", desc: "Everything still changes state; nothing travels, bounces or loops." },
+        ],
+        () => prefs.appearance.motion,
+        (m) => savePrefs((p) => (p.appearance.motion = m)),
+      ),
+      row(
+        "Startup check",
+        "A second or two at launch: the core lights up and Coucou checks the relay, hooks, display, key and network. Skippable; never shown with reduced motion.",
+        toggle(prefs.startup.cinematic, "Startup check", (v) => savePrefs((p) => (p.startup.cinematic = v))),
+      ),
+      row(
+        "Dormant after",
+        "Quiet time before the core dims to dormant.",
+        slider(30, 600, 30, prefs.dormantAfter, (v) => (v < 60 ? `${v} s` : `${Math.round(v / 60)} min`), (v) => savePrefs((p) => (p.dormantAfter = v), true), "Dormant after"),
+      ),
+    ),
+  ];
+}
+
+// Automations ────────────────────────────────────────────────────────────────
+
+const SOUND_CHOICES: [SoundName, string][] = [
+  ["finish", "Finish"], ["approval", "Approval"], ["error", "Error"], ["question", "Question"],
+  ["proud", "Proud"], ["pop", "Pop"], ["tick", "Tick"], ["greet", "Greet"],
+];
+
+function actionLabel(a: ActionSpec): string {
+  switch (a.type) {
+    case "sound": return `Play “${a.sound}”`;
+    case "webhook": {
+      const w = prefs.webhooks.find((x) => x.slot === a.slot);
+      return `Send to ${w?.label ?? a.slot}${a.details ? " (with details)" : ""}`;
+    }
+    default: return ACTION_TITLES[a.type];
+  }
+}
+
+function ruleEditor(rule: AutomationRule | null, onDone: () => void): HTMLElement {
+  const draft: AutomationRule = rule
+    ? structuredClone(rule)
+    : { id: newRuleId(), name: "", enabled: true, trigger: "session-finished", projectContains: "", actions: [{ type: "flash" }] };
+  const name = h("input", { class: "text-input", type: "text", placeholder: "Name — e.g. “Ping my phone when tests fail”", value: draft.name, maxlength: "60", "aria-label": "Rule name" }) as HTMLInputElement;
+  const project = h("input", { class: "text-input", type: "text", placeholder: "Any project", value: draft.projectContains, maxlength: "80", "aria-label": "Project contains" }) as HTMLInputElement;
+  const trigger = select(draft.trigger, TRIGGERS.map((t) => [t.id, t.title] as [TriggerId, string]), "When", (v) => {
+    draft.trigger = v;
+    triggerHint.textContent = TRIGGERS.find((t) => t.id === v)?.desc ?? "";
+  });
+  const triggerHint = h("p", { class: "hint", text: TRIGGERS.find((t) => t.id === draft.trigger)?.desc ?? "" });
+  const actionList = h("div", { class: "rule-actions" });
+  const msg = messageSlot();
+
+  function drawActions() {
+    clear(actionList);
+    draft.actions.forEach((a, i) => {
+      const controls: Node[] = [];
+      if (a.type === "sound") {
+        controls.push(select(a.sound, SOUND_CHOICES, "Sound", (v) => (a.sound = v)));
+      }
+      if (a.type === "webhook") {
+        controls.push(select(a.slot, prefs.webhooks.map((w) => [w.slot, `${w.label}${present[w.slot] ? "" : " (no address)"}`] as [WebhookSlot, string]), "Webhook", (v) => (a.slot = v)));
+        const det = h("label", { class: "check" }, h("input", { type: "checkbox" }), h("span", { text: "Include the command / message" }));
+        const box = det.querySelector("input") as HTMLInputElement;
+        box.checked = a.details;
+        box.addEventListener("change", () => (a.details = box.checked));
+        controls.push(det);
+      }
+      const remove = btn("", "ghost", () => {
+        draft.actions.splice(i, 1);
+        drawActions();
+      }, LINE.x);
+      remove.title = "Remove this action";
+      actionList.append(h("div", { class: "rule-action" }, h("b", { text: ACTION_TITLES[a.type] }), ...controls, h("span", { class: "grow" }), remove));
+    });
+    if (draft.actions.length < 6) {
+      const add = select<"" | ActionSpec["type"]>("", [["", "Add an action…"], ["flash", ACTION_TITLES.flash], ["open", ACTION_TITLES.open], ["sound", ACTION_TITLES.sound], ["webhook", ACTION_TITLES.webhook], ["summarize", ACTION_TITLES.summarize]], "Add an action", (v) => {
+        if (!v) return;
+        draft.actions.push(v === "sound" ? { type: "sound", sound: "finish" } : v === "webhook" ? { type: "webhook", slot: "webhook-1", details: false } : { type: v });
+        drawActions();
+      });
+      actionList.append(add);
+    }
+  }
+  drawActions();
+
+  const saveBtn = btn(rule ? "Save rule" : "Create rule", "primary", () => {
+    draft.name = name.value.trim() || TRIGGERS.find((t) => t.id === draft.trigger)!.title;
+    draft.projectContains = project.value.trim();
+    if (draft.actions.length === 0) {
+      msg.show(notice("err", "Add at least one action."));
+      return;
+    }
+    const usesWebhook = draft.actions.find((a) => a.type === "webhook" && !present[a.slot]);
+    if (usesWebhook && usesWebhook.type === "webhook") {
+      msg.show(notice("warn", `${prefs.webhooks.find((w) => w.slot === usesWebhook.slot)?.label} has no address yet — the rule will fail until you save one below.`));
+    }
+    savePrefs((p) => {
+      const i = p.automations.findIndex((r) => r.id === draft.id);
+      if (i >= 0) p.automations[i] = draft;
+      else p.automations.push(draft);
+    });
+    onDone();
+  }, LINE.check);
+  const cancel = btn("Cancel", "secondary", onDone);
+
+  return h(
+    "div",
+    { class: "rule-editor" },
+    h("div", { class: "rule-grid" },
+      h("label", { text: "Name" }), name,
+      h("label", { text: "When" }), h("div", {}, trigger, triggerHint),
+      h("label", { text: "Only if the project contains" }), project,
+      h("label", { text: "Then" }), actionList,
+    ),
+    msg.el,
+    h("div", { class: "actions end" }, cancel, saveBtn),
+  );
+}
+
+function automationsPage(): HTMLElement[] {
+  const list = h("div", { class: "rules" });
+  const editorSlot = h("div");
+  let editing: string | null = null;
+
+  function draw() {
+    clear(list);
+    clear(editorSlot);
+    if (prefs.automations.length === 0 && editing !== "new") {
+      list.append(h("div", { class: "grant empty" }, ico(LINE.bolt, 16, 1.9), h("span", { text: "No automations yet. Create one: “when tests fail, send it to my phone”." })));
+    }
+    for (const r of prefs.automations) {
+      if (editing === r.id) {
+        list.append(ruleEditor(r, () => {
+          editing = null;
+          draw();
+        }));
+        continue;
+      }
+      const trig = TRIGGERS.find((t) => t.id === r.trigger)?.title ?? r.trigger;
+      list.append(
+        h(
+          "div",
+          { class: `rule${r.enabled ? "" : " off"}` },
+          toggle(r.enabled, `Enable ${r.name}`, (v) => savePrefs((p) => {
+            const x = p.automations.find((y) => y.id === r.id);
+            if (x) x.enabled = v;
+          })),
+          h("div", { class: "rule-text" }, h("b", { text: r.name }), h("span", { text: `${trig}${r.projectContains ? ` · projects with “${r.projectContains}”` : ""} → ${r.actions.map(actionLabel).join(", ")}` })),
+          btn("Edit", "ghost", () => {
+            editing = r.id;
+            draw();
+          }, LINE.compose),
+          btn("", "ghost", async () => {
+            const ok = await confirmDialog({ title: `Delete “${r.name}”?`, body: "The rule stops running. Nothing else changes.", confirm: "Delete", danger: true });
+            if (!ok) return;
+            savePrefs((p) => (p.automations = p.automations.filter((y) => y.id !== r.id)));
+            draw();
+          }, LINE.trash),
+        ),
+      );
+    }
+    if (editing === "new") {
+      editorSlot.append(ruleEditor(null, () => {
+        editing = null;
+        draw();
+      }));
+    } else if (prefs.automations.length < 24) {
+      editorSlot.append(h("div", { class: "actions" }, btn("New automation", "primary", () => {
+        editing = "new";
+        draw();
+      }, LINE.bolt)));
+    }
+  }
+  draw();
+
+  const slots = prefs.webhooks.map((w, i) => {
+    const label = h("input", { class: "text-input small", type: "text", value: w.label, maxlength: "40", "aria-label": `Name of webhook ${i + 1}` }) as HTMLInputElement;
+    label.addEventListener("change", () => savePrefs((p) => (p.webhooks[i].label = label.value.trim() || `Webhook ${i + 1}`)));
+    const kind = select(w.kind, [["ntfy", "ntfy (phone push)"], ["discord", "Discord"], ["slack", "Slack"], ["json", "Other (JSON)"]], "Service", (v) => savePrefs((p) => (p.webhooks[i].kind = v)));
+    const test = btn("Send a test", "secondary", async () => {
+      setBtnState(test, "busy");
+      try {
+        const status = await Bridge.webhookSend(w.slot, prefs.webhooks[i].kind, "Coucou · test message — this webhook works.");
+        setBtnState(test, "done");
+        setBtnLabel(test, `Delivered (${status})`);
+      } catch (err) {
+        setBtnState(test, "failed");
+        setBtnLabel(test, String((err as Error)?.message ?? err).replace(/^Error:\s*/, "").slice(0, 40));
+      }
+      window.setTimeout(() => {
+        setBtnState(test, "idle");
+        setBtnLabel(test, "Send a test");
+      }, 2600);
+    }, LINE.bolt);
+    return h(
+      "div",
+      { class: "webhook" },
+      h("div", { class: "webhook-head" }, label, kind, test),
+      secretField({
+        key: w.slot,
+        label: "Address",
+        placeholder: w.kind === "ntfy" ? "https://ntfy.sh/your-private-topic" : "https://…",
+        secret: true,
+        validate: (v) => (!/^https:\/\//i.test(v) ? { level: "error", msg: "Only https:// addresses." } : null),
+      }),
+    );
+  });
+
+  return [
+    card(
+      "Rules",
+      "When something happens, do something. Automations can show, open, play, notify and summarise — they can never answer a permission request, run a command or change a file. Every run is written to the timeline; each rule runs at most once every 10 seconds and 30 times an hour.",
+      list,
+      editorSlot,
+    ),
+    card(
+      "Webhooks",
+      `Where “Send to a webhook” posts. Addresses are secrets (anyone with one can post to it), so they live in ${VAULT}, never in a file. Only the event and project name are sent unless a rule says “include the command / message”.`,
+      ...slots,
+    ),
+  ];
+}
+
+// Memory ─────────────────────────────────────────────────────────────────────
+
+function memoryPage(): HTMLElement[] {
+  const list = h("div", { class: "memory-list" });
+  const count = h("span", { class: "muted" });
+  async function draw() {
+    clear(list);
+    let items: MemoryItem[] = [];
+    try {
+      items = await Memory.list();
+    } catch (err) {
+      list.append(notice("err", String((err as Error)?.message ?? err)));
+      return;
+    }
+    count.textContent = `${items.length} item${items.length === 1 ? "" : "s"}`;
+    if (items.length === 0) {
+      list.append(h("div", { class: "grant empty" }, ico(LINE.folder, 16, 1.9), h("span", { text: prefs.memory.enabled ? "Nothing saved yet. Use “Save to memory” on one of Claude's summaries or explanations in the island." : "Memory is off. Nothing is being kept." })));
+      return;
+    }
+    for (const it of items) {
+      list.append(
+        h(
+          "div",
+          { class: "memory-item" },
+          h("div", { class: "memory-text" }, h("b", { text: it.title }), h("span", { class: "muted", text: `${it.kind} · ${it.project ?? "no project"} · ${new Date(it.at).toLocaleString()}` }), h("p", { text: it.text })),
+          btn("", "ghost", async () => {
+            await Memory.remove(it.id);
+            void draw();
+          }, LINE.trash),
+        ),
+      );
+    }
+  }
+  void draw();
+
+  const exportBtn = btn("Export…", "secondary", async () => {
+    const blob = new Blob([await Memory.exportJson()], { type: "application/json" });
+    const a = h("a", { href: URL.createObjectURL(blob), download: `coucou-memory-${new Date().toISOString().slice(0, 10)}.json` });
+    document.body.append(a);
+    a.click();
+    a.remove();
+  }, LINE.upload);
+  const clearBtn = btn("Delete everything", "danger", async () => {
+    const ok = await confirmDialog({ title: "Delete all of Coucou's memory?", body: "Every saved summary and note is deleted from this computer. This can't be undone.", confirm: "Delete everything", danger: true });
+    if (!ok) return;
+    await Memory.clear();
+    void draw();
+  }, LINE.trash);
+
+  return [
+    card(
+      "Memory",
+      "Summaries and explanations you choose to keep. Off by default; while it's off nothing is stored.",
+      row("Remember", "Lets “Save to memory” keep items on this computer.", toggle(prefs.memory.enabled, "Memory", (v) => {
+        savePrefs((p) => {
+          p.memory.enabled = v;
+          if (!v) p.memory.useInChat = false;
+        });
+        renderPage(false);
+      })),
+      row("Use in chat", "Sends saved notes with the first message of a new chat, so Claude knows what you kept. The chat shows when this happened.", (() => {
+        const t = toggle(prefs.memory.useInChat, "Use in chat", (v) => {
+          if (!prefs.memory.enabled) return false;
+          savePrefs((p) => (p.memory.useInChat = v));
+        });
+        return t;
+      })()),
+    ),
+    card(
+      "What's kept",
+      null,
+      h(
+        "ul",
+        { class: "bullets" },
+        h("li", { text: "Only what you save with a click: titles and short text (≤ 4,000 characters each, 300 items at most)." }),
+        h("li", { text: "Anything shaped like a key, token, password or private key is removed before saving." }),
+        h("li", { text: "Stored in this app's private webview storage on this computer. Never in settings.json, never synced, never sent anywhere — except to Claude with a chat message when “Use in chat” is on." }),
+      ),
+    ),
+    card("Saved items", null, h("div", { class: "memory-bar" }, count, h("span", { class: "grow" }), exportBtn, clearBtn), list),
+  ];
+}
+
+// Sound: per event ───────────────────────────────────────────────────────────
+
+function soundEventsCard(): HTMLElement {
+  const rows = SOUND_CATEGORIES.map((c) => {
+    const play = btn("", "ghost", async () => {
+      await Sound.preload();
+      Sound.setEnabled(true);
+      Sound.setVolume(settings.soundVolume);
+      Sound.resume();
+      Sound.play(c.sample, true);
+    }, LINE.speaker);
+    play.title = `Preview “${c.sample}”`;
+    return row(c.title, c.desc, play, toggle(prefs.sounds[c.id], c.title, (v) => savePrefs((p) => (p.sounds[c.id] = v))));
+  });
+  const allowed = MODES[prefs.mode].sounds;
+  return card(
+    "Per event",
+    allowed == null ? "Turn off the sounds you don't want." : `${MODES[prefs.mode].title} mode is on: ${allowed.length ? `only ${allowed.join(" and ")} sounds play` : "no sounds play"}, whatever these say.`,
+    ...rows,
+  );
+}
+
+// Security center ────────────────────────────────────────────────────────────
+
+let approvalHistory: TimelineEntry[] | null = null;
+
+function securityCards(): HTMLElement[] {
+  const history = h("div", { class: "grants" });
+  const draw = () => {
+    clear(history);
+    if (approvalHistory == null) {
+      history.append(h("div", { class: "grant empty" }, ico(LINE.hourglass, 16, 1.9), h("span", { text: "Asking the island…" })));
+      return;
+    }
+    if (approvalHistory.length === 0) {
+      history.append(h("div", { class: "grant empty" }, ico(LINE.shieldCheck, 16, 1.9), h("span", { text: "No permission requests since Coucou started." })));
+      return;
+    }
+    for (const e of approvalHistory.slice(0, 30)) {
+      history.append(h("div", { class: "grant" }, h("span", { class: "risk-dot", style: `background:${e.color}` }), h("div", { class: "grant-text" }, h("b", { text: e.text }), h("span", { text: `${e.detail ?? ""} · ${new Date(e.at).toLocaleTimeString()}` }))));
+    }
+  };
+  draw();
+  void sendTo("island", "timeline-query", "permission");
+
+  const vault = h("div", { class: "grants" });
+  const keys: [string, string][] = [
+    ["anthropic-api-key", "Anthropic API key"], ["github-token", "GitHub token"], ["vercel-token", "Vercel token"],
+    ["stripe-api-key", "Stripe key"], ["resend-api-key", "Resend key"], ["notion-api-key", "Notion key"],
+    ["calcom-api-key", "Cal.com key"], ["n8n-api-key", "n8n key"], ["webhook-1", "Webhook 1"], ["webhook-2", "Webhook 2"], ["webhook-3", "Webhook 3"],
+  ];
+  for (const [k, label] of keys) {
+    if (!present[k]) continue;
+    vault.append(h("div", { class: "grant" }, ico(LINE.key, 15, 1.9), h("div", { class: "grant-text" }, h("b", { text: label }), h("span", { text: `In ${VAULT} · value never shown` }))));
+  }
+  if (!vault.childElementCount) vault.append(h("div", { class: "grant empty" }, ico(LINE.lock, 16, 1.9), h("span", { text: "No keys saved." })));
+
+  return [
+    card(
+      "Promises",
+      null,
+      h(
+        "ul",
+        { class: "bullets" },
+        h("li", { text: "Permission requests are only answered by your click — never by a mode, an automation or a timer." }),
+        h("li", { text: "Each request shows a risk reading of the command: deletions, privileges, network, secrets, paths outside the project, and whether it can be undone. It's a reading aid, not a guarantee." }),
+        h("li", { text: "No hidden screen capture, microphone or camera. No remote control. No telemetry." }),
+        h("li", { text: "Keys and webhook addresses live in the OS vault and never come back to the interface." }),
+      ),
+    ),
+    card("Permission history", "Requests and your answers since Coucou started. Kept in memory only; gone when you quit.", history),
+    card("Saved secrets", "What is in the vault — names only.", vault),
+  ];
+}
+
+
 const PAGES: Page[] = [
-  { id: "claude-code", title: "Claude Code", subtitle: "Watch sessions and answer permission requests from the island.", icon: LINE.terminal, render: claudeCodePage, status: () => hookStatus.installed },
-  { id: "claude", title: "Claude", subtitle: "Chat with Claude from the island.", icon: LINE.sparkle, render: claudePage, status: () => present["anthropic-api-key"] ?? false },
-  { id: "integrations", title: "Integrations", subtitle: "Your services, as little Mochis next to the big one.", icon: LINE.plug, render: integrationsPage },
-  { id: "general", title: "General", subtitle: "How the island behaves.", icon: LINE.sliders, render: generalPage },
-  { id: "sound", title: "Sound", subtitle: "What Mochi sounds like.", icon: LINE.speaker, render: soundPage, status: () => (settings.soundEnabled ? null : false) },
-  { id: "display", title: "Display", subtitle: "Which screen the island lives on.", icon: LINE.monitor, render: displayPage },
-  { id: "startup", title: "Startup", subtitle: "When Coucou starts.", icon: LINE.power, render: startupPage },
-  { id: "screen", title: "Screen", subtitle: "Let Coucou see your screen — only when you say so.", icon: LINE.screen, render: screenPage, status: () => (ScreenShare.current.active ? true : null) },
-  { id: "devices", title: "Devices", subtitle: "This computer, and the phones it may one day pair with.", icon: LINE.phone, render: devicesPage },
-  { id: "permissions", title: "Permissions", subtitle: "What Coucou may do, and what you've allowed.", icon: LINE.shield, render: permissionsPage },
-  { id: "about", title: "About", subtitle: "Privacy, files and version.", icon: LINE.info, render: aboutPage },
+  { id: "claude-code", group: "Connect", title: "Claude Code", subtitle: "Watch sessions and answer permission requests from the island.", icon: LINE.terminal, render: claudeCodePage, status: () => hookStatus.installed, keywords: "hooks relay settings.json install" },
+  { id: "claude", group: "Connect", title: "Claude", subtitle: "Chat with Claude from the island.", icon: LINE.sparkle, render: claudePage, status: () => present["anthropic-api-key"] ?? false, keywords: "api key anthropic model chat" },
+  { id: "integrations", group: "Connect", title: "Integrations", subtitle: "Your services, as little Mochis next to the big one.", icon: LINE.plug, render: integrationsPage, keywords: "vercel github stripe n8n resend notion cal.com" },
+  { id: "general", group: "Experience", title: "General", subtitle: "How the island behaves.", icon: LINE.sliders, render: generalPage, keywords: "collapse hide close island" },
+  { id: "modes", group: "Experience", title: "Modes", subtitle: "Focus, silent, presentation, night.", icon: LINE.moon, render: modesPage, status: () => (prefs.mode === "normal" ? null : true), keywords: "do not disturb dnd quiet focus presentation night" },
+  { id: "appearance", group: "Experience", title: "Appearance", subtitle: "Glass, glow, particles, motion and the energy core.", icon: LINE.sparkle, render: appearancePage, keywords: "theme glass glow particles motion core animation startup" },
+  { id: "sound", group: "Experience", title: "Sound", subtitle: "What Mochi sounds like, and when.", icon: LINE.speaker, render: soundPage, status: () => (settings.soundEnabled ? null : false), keywords: "audio volume mute events" },
+  { id: "display", group: "Experience", title: "Display", subtitle: "Which screen the island lives on.", icon: LINE.monitor, render: displayPage, keywords: "monitor screen dpi" },
+  { id: "startup", group: "Experience", title: "Startup", subtitle: "When Coucou starts.", icon: LINE.power, render: startupPage, keywords: "autostart login boot" },
+  { id: "automations", group: "Intelligence", title: "Automations", subtitle: "When something happens, do something.", icon: LINE.bolt, render: automationsPage, status: () => (prefs.automations.some((r) => r.enabled) ? true : null), keywords: "rules triggers actions webhook ntfy discord slack notify" },
+  { id: "memory", group: "Intelligence", title: "Memory", subtitle: "What Coucou keeps, and only if you say so.", icon: LINE.folder, render: memoryPage, status: () => (prefs.memory.enabled ? true : null), keywords: "notes summaries remember export delete" },
+  { id: "permissions", group: "Trust", title: "Security center", subtitle: "What Coucou may do, what you've allowed, and its promises.", icon: LINE.shield, render: permissionsPage, keywords: "permissions grants capabilities risk vault keys history" },
+  { id: "screen", group: "Trust", title: "Screen", subtitle: "Let Coucou see your screen — only when you say so.", icon: LINE.screen, render: screenPage, status: () => (ScreenShare.current.active ? true : null), keywords: "share capture screenshot" },
+  { id: "devices", group: "Trust", title: "Devices", subtitle: "This computer, and the phones it may one day pair with.", icon: LINE.phone, render: devicesPage, keywords: "phone pairing handoff mobile" },
+  { id: "about", group: "About", title: "About", subtitle: "Privacy, files and version.", icon: LINE.info, render: aboutPage, keywords: "version log privacy introduction" },
 ];
 
 // ── Shell ─────────────────────────────────────────────────────────────────────
 
 /** Pages made only of preferences, safe to redraw when the island changes one. */
-const REDRAW_ON_EXTERNAL_CHANGE = new Set(["general", "sound", "display", "startup"]);
+const REDRAW_ON_EXTERNAL_CHANGE = new Set(["general", "sound", "display", "startup", "modes", "appearance"]);
 
 let current = recall("coucou.settings.page") ?? PAGES[0].id;
 const navButtons = new Map<string, HTMLButtonElement>();
@@ -1177,7 +1692,8 @@ function refreshNav() {
     }
   }
   const active = navButtons.get(current);
-  if (active) {
+  navIndicator.classList.toggle("off", !active || active.hidden);
+  if (active && !active.hidden) {
     navIndicator.style.transform = `translate3d(0, ${active.offsetTop}px, 0)`;
     navIndicator.style.height = `${active.offsetHeight}px`;
   }
@@ -1214,7 +1730,15 @@ function go(id: string) {
 
 function buildShell(): HTMLElement {
   const nav = h("nav", { class: "nav-list", "aria-label": "Settings sections" }, navIndicator);
+  let group = "";
+  const groupEls = new Map<string, HTMLElement>();
   for (const p of PAGES) {
+    if (p.group !== group) {
+      group = p.group;
+      const g = h("div", { class: "nav-group", text: group });
+      groupEls.set(group, g);
+      nav.append(g);
+    }
     const b = h(
       "button",
       { class: "nav-item", type: "button", "data-id": p.id },
@@ -1226,6 +1750,30 @@ function buildShell(): HTMLElement {
     navButtons.set(p.id, b);
     nav.append(b);
   }
+  // Settings search: filters the sidebar by title, description and keywords.
+  const search = h("input", { class: "nav-search", type: "search", placeholder: "Search settings", "aria-label": "Search settings", spellcheck: "false" }) as HTMLInputElement;
+  search.addEventListener("input", () => {
+    const q = search.value.trim().toLowerCase();
+    const shownGroups = new Set<string>();
+    for (const p of PAGES) {
+      const hit = !q || `${p.title} ${p.subtitle} ${p.keywords ?? ""}`.toLowerCase().includes(q);
+      navButtons.get(p.id)!.hidden = !hit;
+      if (hit) shownGroups.add(p.group);
+    }
+    for (const [g, el] of groupEls) el.hidden = !shownGroups.has(g);
+    requestAnimationFrame(refreshNav);
+  });
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const first = PAGES.find((p) => !navButtons.get(p.id)!.hidden);
+      if (first) go(first.id);
+    } else if (e.key === "Escape" && search.value) {
+      e.preventDefault();
+      search.value = "";
+      search.dispatchEvent(new Event("input"));
+    }
+  });
+
   // Up / down arrows move between sections.
   nav.addEventListener("keydown", (e) => {
     const k = (e as KeyboardEvent).key;
@@ -1246,6 +1794,7 @@ function buildShell(): HTMLElement {
       h("img", { src: appIcon, alt: "", width: "34", height: "34" }),
       h("div", {}, h("b", { text: "Coucou" }), h("span", { text: version ? `v${version}` : "dev" })),
     ),
+    search,
     nav,
     h("div", { class: "side-foot" }, ico(LINE.lock, 13, 2), h("span", { text: "No telemetry" })),
   );
@@ -1260,11 +1809,14 @@ async function main() {
     settings = { ...settings, ...boot.settings };
     version = boot.version;
   }
+  prefs = readPrefs(settings.prefs);
+  applyAppearance(prefs);
   hookStatus = (await Bridge.hooksStatus()) ?? hookStatus;
 
   const keys = [
     "anthropic-api-key", "stripe-api-key", "github-token", "vercel-token",
     "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
+    "webhook-1", "webhook-2", "webhook-3",
   ];
   await Promise.all(keys.map(async (k) => {
     present[k] = (await Bridge.secretPresent(k)) ?? false;
@@ -1281,6 +1833,11 @@ async function main() {
     if (current === "screen" || current === "permissions") renderPage(false);
   });
   Consent.subscribe(() => {
+    if (current === "permissions") renderPage(false);
+  });
+  // Permission history lives in the island; it answers when asked.
+  void onEvent<TimelineEntry[]>("timeline-snapshot", (entries) => {
+    approvalHistory = entries;
     if (current === "permissions") renderPage(false);
   });
   // The island asks for a specific page ("Set up", "API key", "Screen"…).
@@ -1302,6 +1859,8 @@ async function main() {
     // redrawing would cut short the switch that was just flipped.
     if (JSON.stringify(next) === JSON.stringify(settings)) return;
     settings = next;
+    prefs = readPrefs(settings.prefs);
+    applyAppearance(prefs);
     hookStatus.installed = settings.hooksInstalled;
     refreshNav();
     const editing = document.activeElement instanceof HTMLInputElement;

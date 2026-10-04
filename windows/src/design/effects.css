@@ -26,11 +26,17 @@
 /* ── Liquid glass ───────────────────────────────────────────────────────── */
 
 .fx-glass {
-  --glass-tint: rgba(255, 255, 255, 0.04);
+  /* --pref-glass: Settings → Appearance → Glass (0.6–1.4). */
+  --glass-tint: rgba(255, 255, 255, calc(0.04 * var(--pref-glass, 1)));
   position: relative;
   isolation: isolate;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.012) 42%, rgba(255, 255, 255, 0.02)),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, calc(0.055 * var(--pref-glass, 1))),
+      rgba(255, 255, 255, calc(0.012 * var(--pref-glass, 1))) 42%,
+      rgba(255, 255, 255, calc(0.02 * var(--pref-glass, 1)))
+    ),
     var(--glass-tint);
   -webkit-backdrop-filter: blur(18px) saturate(150%);
   backdrop-filter: blur(18px) saturate(150%);

@@ -10,7 +10,7 @@ import {
   type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, type CoreState } from "../core/state";
 import { BotEngine, hexToRGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
 import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
@@ -23,6 +23,17 @@ import { LINE } from "../views/icons";
 import { primaryPhase, STATE_COLOR, type Phase } from "../core/activity";
 import { IslandStateMachine } from "./fsm";
 import { EnergyCore, type CoreKind } from "./core";
+import { applyAppearance, MODES, soundAllowed } from "../core/prefs";
+import { Automation } from "../core/automation";
+import { Insight } from "../core/insight";
+import { Memory, scrub } from "../core/memory";
+import { localSummary, Session, summaryPrompt } from "../core/session";
+import { COMMAND_CLASS_LABEL, REVERSIBILITY_LABEL } from "../core/risk";
+
+/** Views with a text field: the only times the island takes keyboard focus. */
+const TEXT_VIEWS: ReadonlySet<IslandViewName> = new Set(["prompt", "palette", "timeline"]);
+/** Views that draw Mochi small, without the energy core around it. */
+const NO_CORE_VIEWS: ReadonlySet<IslandViewName> = new Set(["welcome", "center", "palette", "timeline"]);
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -52,6 +63,11 @@ export class Island {
   private scan!: HTMLElement;
   /** Cursor over the island, −1…1 from its centre (0 when away). */
   private parallax = { x: 0, y: 0 };
+  /** Named core state bookkeeping: one timer at a time, none while busy. */
+  private dormant = false;
+  private dormantTimer: number | null = null;
+  private transientState: { state: CoreState; until: number } | null = null;
+  private transientTimer: number | null = null;
   private prevHeight = 0;
   private lastTone = "idle";
   private greetingCanvas!: HTMLCanvasElement;
@@ -185,6 +201,7 @@ export class Island {
             tone: d === "allow" ? "success" : "info",
             icon: d === "allow" ? LINE.check : LINE.x,
             color: d === "allow" ? "#34D399" : "#9AA3B2",
+            cat: "permission",
           });
         } else {
           // Claude Code took the question back to the terminal: say so.
@@ -197,6 +214,7 @@ export class Island {
             tone: "alert",
             icon: LINE.hourglass,
             color: "#F5A524",
+            cat: "permission",
           });
         }
         State.notify();
@@ -224,7 +242,65 @@ export class Island {
       hide: () => this.hide(),
       openSettingsWindow: () => void Bridge.openSettingsWindow(),
       blip: () => Sound.play("blip"),
+      setMode: (mode) => {
+        State.settings.prefs = { ...State.prefs, mode };
+        this.applySettings();
+        void Bridge.saveSettings(State.settings);
+        State.log({ text: `${MODES[mode].title} mode`, detail: MODES[mode].desc, tone: "info", icon: LINE.moon, color: "#A78BFA", cat: "session" });
+        State.showFlash(`${MODES[mode].title} mode`, "#A78BFA", "info", 2600, true);
+        State.notify();
+      },
+      summarizeSession: () => {
+        this.setView("insight");
+        void this.summarize().catch(() => {});
+      },
+      explainApproval: async () => {
+        const req = State.pendingApproval;
+        if (!req) throw new Error("The request is gone.");
+        const r = req.risk;
+        const prompt = [
+          "A developer is about to approve or deny this Claude Code permission request. Explain what it would do,",
+          "what it could affect, and whether any part is risky or irreversible. Say if you're unsure.",
+          "",
+          `Tool: ${req.tool}`,
+          `Request: ${req.target || "(no target)"}`,
+          req.cwd ? `Working folder: ${req.cwd}` : "",
+          r ? `Local reading: ${r.flags.map((f) => f.label).join(", ") || "no risky pattern found"}; ${REVERSIBILITY_LABEL[r.reversibility]}${r.commandClass ? `; ${COMMAND_CLASS_LABEL[r.commandClass]}` : ""}` : "",
+        ].filter(Boolean).join("\n");
+        // Credentials that happen to be in the command line never leave the computer.
+        return Insight.run("explain", `Explaining · ${req.tool}`, scrub(prompt), State.focusTask?.name ?? null);
+      },
+      newChat: () => {
+        State.chatHistory = [];
+        State.droppedFile = null;
+        State.promptContext = null;
+        void Bridge.chatReset();
+        this.setView("prompt");
+      },
+      refreshIntegration: (id) => {
+        void Bridge.refreshIntegration(id);
+        State.showFlash("Refreshing…", "#9AA3B2", "info", 2000, true);
+      },
+      saveToMemory: async (kind, title, text, project) => {
+        if (!State.prefs.memory.enabled) return false;
+        try {
+          await Memory.add({ kind, title, text, project });
+          State.log({ text: "Saved to memory", detail: title, tone: "info", icon: LINE.folder, color: "#A78BFA", cat: "session" });
+          State.notify();
+          return true;
+        } catch (err) {
+          State.showFlash(`Couldn't save: ${String((err as Error)?.message ?? err)}`, "#F4505E", "error", 4000, true);
+          return false;
+        }
+      },
+      bootDone: () => {
+        if (State.view === "boot") this.launch();
+      },
     };
+    Automation.init({
+      open: (view) => this.alert(view),
+      summarize: () => this.summarize(),
+    });
 
     this.wakeStrip = h("div", { id: "wake-strip" });
     this.ring = h("div", { id: "island-ring" });
@@ -330,6 +406,34 @@ export class Island {
     this.fsm.launch();
   }
 
+  /** Startup check (skippable), then the usual greeting. */
+  boot() {
+    this.fsm.forceHome();
+    this.expand("boot");
+  }
+
+  /** Asks Claude to summarise the current session; the insight view shows it. */
+  summarize(): Promise<string> {
+    const snap = Session.snapshot();
+    const lines = State.timeline
+      .filter((e) => !e.project || e.project === snap.project)
+      .slice(0, 30)
+      .map((e) => `${new Date(e.at).toLocaleTimeString()} ${e.text}${e.detail ? ` — ${e.detail.slice(0, 160)}` : ""}`);
+    const project = snap.project || null;
+    const title = `Session summary${project ? ` · ${project}` : ""}`;
+    // Nothing to summarise: say so locally instead of spending tokens.
+    if (snap.tools === 0 && !snap.prompt && lines.length === 0) {
+      Insight.current = { status: "ready", kind: "summary", title, text: localSummary(snap), project, at: Date.now() };
+      State.notify();
+      return Promise.resolve(Insight.current.text);
+    }
+    return Insight.run("summary", title, scrub(summaryPrompt(snap, lines)), project).then((text) => {
+      State.log({ text: "Summary ready", detail: text.slice(0, 120), tone: "success", icon: LINE.sparkle, color: "#A78BFA", cat: "session", project: project ?? undefined });
+      if (State.view !== "insight") State.showFlash("Claude's summary is ready", "#A78BFA", "info", 5000, true);
+      return text;
+    });
+  }
+
   // ── Mode / view ─────────────────────────────────────────────────────────────
 
   private setMode(mode: IslandMode) {
@@ -433,7 +537,7 @@ export class Island {
     // island only goes as far as compact, where it keeps saying so.
     if (State.screen.active) {
       this.fsm.forcePetit();
-      State.showFlash("Screen access is on — stop it to hide Coucou", "#F4505E", "error", 4000);
+      State.showFlash("Screen access is on — stop it to hide Coucou", "#F4505E", "error", 4000, true);
       return;
     }
     this.fsm.forceHidden();
@@ -689,6 +793,12 @@ export class Island {
     });
 
     window.addEventListener("keydown", (e) => {
+      // Ctrl+K (⌘K): the command palette, from anywhere in the island.
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        this.setView(State.view === "palette" ? State.defaultView() : "palette");
+        return;
+      }
       if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
       State.lastActivity = performance.now();
     });
@@ -903,7 +1013,7 @@ export class Island {
     const coreOn =
       State.mode === "expanded" && State.view !== "uploading" && !greetingActive && !this.uploadActive && p.diameter > 0 &&
       // These two draw their own: the onboarding core and the activity panel.
-      State.view !== "welcome" && State.view !== "center";
+      !NO_CORE_VIEWS.has(State.view);
     this.core.place(this.botCx.value, this.botCy.value, p.diameter, coreOn, this.parallax.x, this.parallax.y);
   }
 
@@ -978,12 +1088,13 @@ export class Island {
     // The chat is the only view with a text field, so it is the only time the
     // island is allowed to take keyboard focus.
     if (this.lastSyncedView !== State.view) {
-      const wasChat = this.lastSyncedView === "prompt";
+      const hadField = this.lastSyncedView != null && TEXT_VIEWS.has(this.lastSyncedView);
       this.lastSyncedView = State.view;
-      if (State.view === "prompt") {
+      if (TEXT_VIEWS.has(State.view)) {
         void Bridge.focusWindow(true);
-        window.setTimeout(() => this.views.get("prompt")?.focus?.(), 120);
-      } else if (wasChat) {
+        const v = State.view;
+        window.setTimeout(() => this.views.get(v)?.focus?.(), 120);
+      } else if (hadField) {
         void Bridge.focusWindow(false);
       }
     }
@@ -1031,6 +1142,7 @@ export class Island {
 
     const coreKind: CoreKind = override === "thinking" ? "chat" : override === "dizzy" ? "idle" : phase?.kind ?? "idle";
     this.core.setPhase(coreKind, tone, color);
+    this.syncCoreState(coreKind, tone);
     // The rim turns to aurora only while something waits on the user.
     this.ring.classList.toggle("fx-aurora", tone === "alert");
     // A new kind of state sweeps a scan line across the island, once.
@@ -1073,10 +1185,71 @@ export class Island {
     }
   }
 
-  /** Applies settings coming from Rust at boot. */
+  /**
+   * The core's named state. Quiet for `dormantAfter` seconds → dormant; the
+   * first activity after that → awakening (1.2 s); a success or failure
+   * fading back to idle → cooling (2.4 s). Single-shot timers, no polling.
+   */
+  private syncCoreState(kind: CoreKind, tone: string) {
+    const prev = State.coreState;
+    let next: CoreState =
+      tone === "error" || kind === "error" ? "failure"
+      : tone === "success" || kind === "done" ? "success"
+      : kind === "permission" ? "permission"
+      : kind === "question" || kind === "ratelimit" ? "warning"
+      : kind === "chat" ? "communicating"
+      : kind === "think" || kind === "plan" ? "thinking"
+      : kind === "read" || kind === "search" || kind === "web" ? "analyzing"
+      : kind === "idle" ? "idle"
+      : "executing";
+
+    const now = Date.now();
+    if (next === "idle") {
+      if ((prev === "success" || prev === "failure") && !this.dormant) this.setTransient("cooling", 2400);
+      if (this.dormant) next = "dormant";
+      else if (this.dormantTimer == null) {
+        this.dormantTimer = window.setTimeout(() => {
+          this.dormantTimer = null;
+          this.dormant = true;
+          State.notify();
+        }, State.prefs.dormantAfter * 1000);
+      }
+    } else {
+      if (this.dormantTimer != null) window.clearTimeout(this.dormantTimer);
+      this.dormantTimer = null;
+      if (this.dormant) {
+        this.dormant = false;
+        this.setTransient("awakening", 1200);
+      }
+    }
+    if (this.transientState && this.transientState.until > now && (next === "idle" || this.transientState.state === "awakening")) {
+      next = this.transientState.state;
+    }
+    if (next !== prev) {
+      State.coreState = next;
+      this.core.el.dataset.state = next;
+      this.islandEl.dataset.core = next;
+    }
+  }
+
+  private setTransient(state: CoreState, ms: number) {
+    this.transientState = { state, until: Date.now() + ms };
+    if (this.transientTimer != null) window.clearTimeout(this.transientTimer);
+    this.transientTimer = window.setTimeout(() => {
+      this.transientTimer = null;
+      this.transientState = null;
+      State.notify();
+    }, ms + 20);
+  }
+
+  /** Applies settings coming from Rust at boot, and every change after. */
   applySettings() {
+    const prefs = State.prefs;
     Sound.setEnabled(State.settings.soundEnabled);
     Sound.setVolume(State.settings.soundVolume);
+    Sound.gate = (name) => soundAllowed(State.prefs, name);
+    Sound.setScale(prefs.mode === "night" ? 0.5 : 1);
+    applyAppearance(prefs);
     State.notify();
   }
 

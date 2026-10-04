@@ -10,7 +10,9 @@ mod pipe;
 mod platform;
 mod secrets;
 mod settings;
+mod system;
 mod tray;
+mod webhook;
 
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -258,6 +260,34 @@ fn ingest_file(path: String) -> Result<DroppedFile, String> {
 }
 
 /// The island may only ask whether a key exists — never read it.
+/// A one-off summary or explanation the user asked for (not part of the chat).
+#[tauri::command]
+async fn claude_insight(shared: State<'_, Shared>, prompt: String) -> Result<ChatReply, String> {
+    let model = shared.settings.lock().unwrap().model.clone();
+    claude::insight(&model, prompt).await
+}
+
+/// CPU, memory, uptime and battery, as the OS reports them. Called only while
+/// the command center is on screen.
+#[tauri::command]
+fn system_stats() -> system::SystemStats {
+    system::stats()
+}
+
+/// Branch and project markers for a folder Claude Code is working in.
+#[tauri::command]
+fn project_probe(path: String) -> Result<system::ProjectInfo, String> {
+    system::probe_project(&path)
+}
+
+/// Sends an automation message to a webhook saved in the vault.
+#[tauri::command]
+async fn webhook_send(slot: String, kind: String, text: String) -> Result<u16, String> {
+    let result = webhook::send(&slot, &kind, &text).await;
+    log::line(format!("webhook {slot} {kind} → {}", match &result { Ok(s) => s.to_string(), Err(e) => e.clone() }));
+    result
+}
+
 /// Checks the stored Anthropic key against the API. Only a status comes back.
 #[tauri::command]
 async fn claude_check_key() -> claude::KeyCheck {
@@ -414,6 +444,10 @@ pub fn run() {
             ingest_file,
             secret_present,
             claude_check_key,
+            system_stats,
+            claude_insight,
+            project_probe,
+            webhook_send,
             ingest_screenshot,
             secret_set,
             secret_clear,

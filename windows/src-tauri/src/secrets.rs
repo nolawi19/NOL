@@ -16,6 +16,10 @@ pub const KNOWN_KEYS: &[&str] = &[
     "resend-api-key",
     "notion-api-key",
     "calcom-api-key",
+    // Automation webhooks (ntfy / Discord / Slack / JSON): the URL is the secret.
+    "webhook-1",
+    "webhook-2",
+    "webhook-3",
 ];
 
 fn entry(key: &str) -> Option<Entry> {

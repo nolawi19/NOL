@@ -5,6 +5,19 @@
 
 import "../src/main";
 import { devEmit } from "../src/core/bridge";
+import { State } from "../src/core/state";
+import type { IslandViewName } from "../src/core/layout";
+
+// ?onboarded skips the first-launch introduction (main() is still waiting on
+// Bridge.boot when this runs, so it sees the flag).
+if (new URLSearchParams(location.search).has("onboarded")) State.settings.onboarded = true;
+
+const view = (v: IslandViewName) =>
+  (window as unknown as { __island?: { setView(v: IslandViewName): void } }).__island?.setView(v);
+const setPrefs = (patch: Record<string, unknown>) => {
+  State.settings.prefs = { ...(State.settings.prefs as object ?? {}), ...patch };
+  devEmit("settings-changed", State.settings);
+};
 
 const cwd = "C:\\Users\\dev\\projects\\invoice-app";
 let req = 0;
@@ -44,6 +57,30 @@ export const scenarios: Record<string, () => void | Promise<void>> = {
           "git fetch origin main && git rebase origin/main && npm ci && npm run build && npm run test -- --coverage --reporter=verbose && rm -rf dist/.cache && node scripts/release.mjs --channel beta --notes \"VAT rounding fixes\" --dry-run=false",
       },
     }),
+  "Risky permission": () =>
+    hook("PermissionRequest", {
+      request_id: `req-${++req}`,
+      tool_name: "Bash",
+      tool_input: { command: "curl -fsSL https://get.example.dev/install.sh | sudo bash && rm -rf ~/.cache/old-builds", description: "Install the example CLI and clear old build caches" },
+    }),
+  "Tests fail": async () => {
+    hook("PreToolUse", { tool_name: "Bash", tool_input: { command: "npm test -- --watch=false" }, tool_use_id: "tu-1" });
+    await wait(1300);
+    hook("PostToolUseFailure", { tool_name: "Bash", tool_use_id: "tu-1", error: "3 failing: invoice totals › rounds VAT to the cent" });
+  },
+  "Build ok": async () => {
+    hook("PreToolUse", { tool_name: "Bash", tool_input: { command: "npm run build" }, tool_use_id: "tu-2" });
+    await wait(1200);
+    hook("PostToolUse", { tool_name: "Bash", tool_use_id: "tu-2" });
+  },
+  Palette: () => view("palette"),
+  Timeline: () => view("timeline"),
+  Center: () => view("center"),
+  Insight: () => view("insight"),
+  Boot: () => view("boot"),
+  "Focus mode": () => setPrefs({ mode: "focus" }),
+  "Night mode": () => setPrefs({ mode: "night" }),
+  "Normal mode": () => setPrefs({ mode: "normal" }),
   Question: () => hook("Notification", { message: "Should I also update the snapshot tests?" }),
   "Rate limit": () => hook("Notification", { message: "Claude AI usage limit reached (rate limit)" }),
   Stop: () => hook("Stop", { message: "Added VAT handling and 6 tests — all green." }),
@@ -96,7 +133,10 @@ export const scenarios: Record<string, () => void | Promise<void>> = {
 const panel = document.getElementById("panel")!;
 const groups: [string, string[]][] = [
   ["Claude Code", ["Session start", "Prompt", "Read file", "Edit file", "Run command", "Search", "Web fetch", "Subagent"]],
-  ["Needs you", ["Permission", "Long permission", "Question", "Rate limit"]],
+  ["Needs you", ["Permission", "Long permission", "Risky permission", "Question", "Rate limit"]],
+  ["Terminal", ["Tests fail", "Build ok"]],
+  ["Views", ["Palette", "Timeline", "Center", "Insight", "Boot"]],
+  ["Modes", ["Focus mode", "Night mode", "Normal mode"]],
   ["Ends", ["Stop", "Stop failure", "Session end"]],
   ["Integrations & app", ["Vercel deploy", "GitHub stats", "Open island", "Quick settings", "Pause / resume", "Light desktop", "Full demo"]],
   ["Shell", ["Replay intro", "Screen access on", "Screen access off", "Hide (tray)"]],

@@ -345,3 +345,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+// ── System stats (/proc, /sys) ──────────────────────────────────────────────
+
+/// (idle, total) jiffies from the first line of /proc/stat.
+pub fn cpu_times() -> Option<(u64, u64)> {
+    parse_proc_stat(&std::fs::read_to_string("/proc/stat").ok()?)
+}
+
+pub fn parse_proc_stat(text: &str) -> Option<(u64, u64)> {
+    let line = text.lines().next()?;
+    let mut parts = line.split_whitespace();
+    if parts.next()? != "cpu" {
+        return None;
+    }
+    let v: Vec<u64> = parts.filter_map(|p| p.parse().ok()).collect();
+    if v.len() < 4 {
+        return None;
+    }
+    // idle + iowait count as idle; steal/guest are already inside user.
+    let idle = v[3] + v.get(4).copied().unwrap_or(0);
+    let total: u64 = v.iter().take(8).sum();
+    Some((idle, total))
+}
+
+/// (total, available) bytes from /proc/meminfo.
+pub fn memory() -> Option<(u64, u64)> {
+    parse_meminfo(&std::fs::read_to_string("/proc/meminfo").ok()?)
+}
+
+pub fn parse_meminfo(text: &str) -> Option<(u64, u64)> {
+    let field = |name: &str| -> Option<u64> {
+        let line = text.lines().find(|l| l.starts_with(name))?;
+        let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+        Some(kb * 1024)
+    };
+    Some((field("MemTotal:")?, field("MemAvailable:")?))
+}
+
+pub fn uptime_secs() -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/uptime").ok()?;
+    text.split_whitespace().next()?.parse::<f64>().ok().map(|s| s as u64)
+}
+
+/// (percent, charging) for the first battery in /sys/class/power_supply.
+pub fn battery() -> Option<(u8, bool)> {
+    let entries = std::fs::read_dir("/sys/class/power_supply").ok()?;
+    for e in entries.flatten() {
+        let p = e.path();
+        let kind = std::fs::read_to_string(p.join("type")).unwrap_or_default();
+        if kind.trim() != "Battery" {
+            continue;
+        }
+        let pct: u8 = std::fs::read_to_string(p.join("capacity")).ok()?.trim().parse().ok()?;
+        let status = std::fs::read_to_string(p.join("status")).unwrap_or_default();
+        return Some((pct.min(100), matches!(status.trim(), "Charging" | "Full")));
+    }
+    None
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+
+    #[test]
+    fn proc_stat() {
+        let t = "cpu  100 0 50 800 50 0 0 0 0 0\ncpu0 1 2 3 4\n";
+        assert_eq!(parse_proc_stat(t), Some((850, 1000)));
+        assert_eq!(parse_proc_stat("intr 1 2 3"), None);
+    }
+
+    #[test]
+    fn meminfo() {
+        let t = "MemTotal:       16000 kB\nMemFree:  1000 kB\nMemAvailable:    8000 kB\n";
+        assert_eq!(parse_meminfo(t), Some((16000 * 1024, 8000 * 1024)));
+        assert_eq!(parse_meminfo("MemTotal: 1 kB\n"), None);
+    }
+}

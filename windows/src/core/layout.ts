@@ -23,7 +23,11 @@ export type IslandViewName =
   | "settings"
   | "greeting"
   | "welcome"
-  | "center";
+  | "center"
+  | "palette"
+  | "timeline"
+  | "insight"
+  | "boot";
 
 export type BotStateName =
   | "idle"
@@ -62,7 +66,7 @@ export const COMPACT_W = 288; // NOTCH_W + 104
 /** Compact island while it spells out what Claude is doing. */
 export const COMPACT_WIDE_W = 356;
 /** Approval / question card unfolded to show the whole command. */
-export const DETAIL_H = 268;
+export const DETAIL_H = 288;
 export const EXPANDED_W = 640;
 
 export const ROUNDED_CORNER = 14; // hidden / compact
@@ -98,6 +102,12 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   welcome: { height: 288, botX: 105, botY: 155, botDiameter: 64, agentMode: "none" },
   // Command center: Mochi watches from the corner of the activity panel.
   center: { height: 288, botX: 46, botY: 64, botDiameter: 26, agentMode: "none" },
+  // Palette and timeline: Mochi beside the search field, as in the center.
+  palette: { height: 288, botX: 46, botY: 64, botDiameter: 26, agentMode: "none" },
+  timeline: { height: 288, botX: 46, botY: 64, botDiameter: 26, agentMode: "none" },
+  insight: { height: 236, botX: 62, botY: 108, botDiameter: 54, agentMode: "none" },
+  // Startup check: Mochi wakes in the middle of the energy point.
+  boot: { height: 176, botX: 112, botY: 108, botDiameter: 54, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually
