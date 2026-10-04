@@ -211,9 +211,10 @@ fn hooks_apply(
     Ok(backup)
 }
 
+/// True when the decision reached a relay that was still waiting for it.
 #[tauri::command]
-fn approval_decision(app: AppHandle, request_id: String, decision: String) {
-    pipe::answer(&app, &request_id, &decision);
+fn approval_decision(app: AppHandle, request_id: String, decision: String) -> bool {
+    pipe::answer(&app, &request_id, &decision)
 }
 
 /// The island has the card on screen, so the long wait for a human may begin.
@@ -257,6 +258,22 @@ fn ingest_file(path: String) -> Result<DroppedFile, String> {
 }
 
 /// The island may only ask whether a key exists — never read it.
+/// Checks the stored Anthropic key against the API. Only a status comes back.
+#[tauri::command]
+async fn claude_check_key() -> claude::KeyCheck {
+    claude::check_key().await
+}
+
+/// A screenshot the user took on purpose (Settings → Screen), sent as raw bytes
+/// so a multi-megabyte image doesn't go through JSON. Saved to the inbox.
+#[tauri::command]
+fn ingest_screenshot(request: tauri::ipc::Request<'_>) -> Result<DroppedFile, String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => files::ingest_screenshot(bytes),
+        _ => Err("Expected image bytes.".into()),
+    }
+}
+
 #[tauri::command]
 fn secret_present(key: String) -> bool {
     secrets::present(&key)
@@ -396,6 +413,8 @@ pub fn run() {
             chat_reset,
             ingest_file,
             secret_present,
+            claude_check_key,
+            ingest_screenshot,
             secret_set,
             secret_clear,
             refresh_integration,

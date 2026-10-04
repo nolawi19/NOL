@@ -74,7 +74,7 @@ function ripple(el: HTMLElement, e: MouseEvent) {
 
 /** Card shell with an optional coloured wash rising from the bottom edge. */
 export function card(wash: Wash, ...children: (Node | string)[]): HTMLElement {
-  const el = h("div", { class: wash ? "card wash" : "card" }, ...children);
+  const el = h("div", { class: wash ? "card fx-glass wash" : "card fx-glass" }, ...children);
   if (wash) {
     el.style.setProperty("--wash", washRGBA(wash));
     el.dataset.wash = wash;

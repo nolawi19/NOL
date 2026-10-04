@@ -8,13 +8,15 @@ use crate::island::WINDOW_LABEL;
 
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Coucou", true, None::<&str>)?;
+    // The island never hides on its own; this is one of the ways to ask it to.
+    let hide = MenuItem::with_id(app, "hide", "Hide island", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let pause = MenuItem::with_id(app, "pause", "Pause", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
 
-    let menu = Menu::with_items(app, &[&open, &sep1, &settings, &pause, &sep2, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &hide, &sep1, &settings, &pause, &sep2, &quit])?;
 
     let mut builder = TrayIconBuilder::with_id("coucou")
         .tooltip("Coucou")

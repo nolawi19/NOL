@@ -260,38 +260,45 @@ async fn wait_for_decision(id: &str, rx: &mut mpsc::Receiver<Reply>) -> Option<S
     }
 }
 
-fn send(app: &AppHandle, request_id: &str, reply: Reply, keep: bool) {
+/// Returns whether the reply reached a relay that is still waiting. A request
+/// that already timed out has no sender left (or a closed one).
+fn send(app: &AppHandle, request_id: &str, reply: Reply, keep: bool) -> bool {
     let sender = {
         let pending = app.state::<Pending>();
         let mut map = pending.0.lock().unwrap();
         if keep { map.get(request_id).cloned() } else { map.remove(request_id) }
     };
     match sender {
-        Some(tx) => {
-            let _ = tx.try_send(reply);
+        Some(tx) => tx.try_send(reply).is_ok(),
+        None => {
+            log::line(format!("reply for id={request_id} — no pending request"));
+            false
         }
-        None => log::line(format!("reply for id={request_id} — no pending request")),
     }
 }
 
 /// The island has the card on screen; the long wait may begin.
 pub fn acknowledge(app: &AppHandle, request_id: &str) {
-    send(app, request_id, Reply::Ack, true);
+    let _ = send(app, request_id, Reply::Ack, true);
 }
 
 /// Nobody can act on this one — paused, or another card already holds the view.
 pub fn decline(app: &AppHandle, request_id: &str) {
     log::line(format!("decline id={request_id}"));
-    send(app, request_id, Reply::Decline, false);
+    let _ = send(app, request_id, Reply::Decline, false);
 }
 
 /// Called by the island's Allow / Deny buttons. Only ever a bare word: turning
 /// it into Claude Code's JSON is coucou-hook's job.
-pub fn answer(app: &AppHandle, request_id: &str, decision: &str) {
+///
+/// Returns false when the request is no longer waiting (it timed out and Claude
+/// Code asked in the terminal), so the island never shows a decision that
+/// didn't land.
+pub fn answer(app: &AppHandle, request_id: &str, decision: &str) -> bool {
     let word = match decision {
         "allow" | "always" => "allow",
         _ => "deny",
     };
     log::line(format!("decision id={request_id} {word}"));
-    send(app, request_id, Reply::Decision(word.to_string()), false);
+    send(app, request_id, Reply::Decision(word.to_string()), false)
 }

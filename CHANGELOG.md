@@ -2,6 +2,18 @@
 
 ## Unreleased — Windows and Linux
 
+- **No more auto-close.** The island never closes, collapses or hides on a timer — not after Claude finishes, not after a permission, not when idle, not after the launch greeting. Only Esc, the new collapse / hide buttons, Done, the tray (new "Hide island") or Pause make it smaller. The Auto-close setting is gone. Idle costs nothing: no animation runs, and the cursor is reported to the island 10 times a second instead of 60 when the pointer is far from it
+- First-launch introduction and setup checklist in the island (dark start, energy core, tour, live status of hooks and API key); interrupted setup resumes next launch; replay from Settings → About
+- Energy core around Mochi: halo, rings, orbiting particles and a sweep that move differently for thinking, reading, editing, running, searching, browsing, subagents, permissions, questions, finished and errors — all from real hook and chat state; idle is still
+- Liquid-glass cards, cursor spotlight under the glass, parallax, a scan sweep on state changes, an aurora rim while a request waits, liquid edge fillets that swell as the island pours out; a shared effects engine (`src/design/effects.css`, `src/fx/pointer.ts`)
+- Permissions show only what the backend confirmed: `approval_decision` now reports whether Claude Code was still waiting, so a late click reads "Too late — answer in the terminal" instead of "Allowed"; the countdown matches the relay's 108 s window and the card hands the request back to the terminal when it ends
+- Command center tab: live activity timeline (hook events, permissions and decisions, integrations, chat), Claude Code, chat/API, requests, screen access, this computer and devices
+- Chat: syntax-highlighted code blocks with copy, inline error with Retry, "Anthropic API · model" badge separating it from Claude Code and claude.ai
+- Settings → Claude: connection status with Test connection (the key is tried against the Models API in Rust; no tokens spent, the key never leaves Rust); confirmation dialogs for removing keys
+- Settings → Screen: share a screen or window after a consent dialog and the system picker, with a live preview, SCREEN ACCESS ACTIVE + Stop in the island, and "Ask Claude about this" (one still, second consent, attached to the chat). Hiding the island while sharing only collapses it; Pause stops sharing
+- Settings → Devices: this computer's identity (WebCrypto P-256, non-extractable key); phone pairing and handoff are architecture-ready and clearly marked as needing Coucou Mobile — nothing is shown as connected. Protocol in `docs/DEVICES.md`
+- Settings → Permissions: active grants with Revoke, and the full capability matrix (risk, status, what each waits on) — `docs/CAPABILITIES.md`
+
 - A redesigned island and settings window, built on one design system (`windows/src/design/tokens.css`): type scale, spacing, radii, layered surfaces, elevation, blur, status colours, durations, easings and real spring curves
 - The island now flows out of the top edge of the screen, casts a soft shadow, and lights up with what Claude is doing: an underglow and a light running along its bottom edge while it works, a breathing rim when a request waits for you
 - Claude's activity in plain words, everywhere: Thinking, Reading files, Editing code, Running a command, Searching, Browsing the web, Needs your permission, Waiting for you, Finished, Stopped on an error — in the overview, in a status capsule in the header, and in the compact island, which widens to spell it out

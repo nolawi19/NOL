@@ -7,10 +7,12 @@ import { ICONS, LINE } from "./icons";
 import { Ticker } from "./ticker";
 import { State, type AgentTask } from "../core/state";
 import type { IslandViewName } from "../core/layout";
-import { Bridge } from "../core/bridge";
+import { Bridge, sendTo } from "../core/bridge";
 import { formatDuration, kindIcon, phaseOf, primaryPhase, STATE_COLOR, toolKind } from "../core/activity";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
+import { buildCenter } from "./center";
+import { buildWelcome } from "./welcome";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { button, card, clock, icon, setIcon, stagger, statusChip, TextSwap, tintVars } from "./ui";
@@ -24,15 +26,22 @@ export interface ViewActions {
   openTarget(): void;
   openUrl(url: string): void;
   openN8n(): void;
-  decide(d: "allow" | "deny"): void;
+  /** Sends the decision; resolves with what the backend actually did with it. */
+  decide(d: "allow" | "deny"): Promise<DecisionResult>;
   toggleSound(): void;
   setVolume(v: number): void;
-  setAutoClose(seconds: number): void;
+  /** Explicit hide: retract into the top edge. */
+  hide(): void;
+  /** Opens the settings window on a given page. */
+  openSettingsPage(page: string): void;
   openSettingsWindow(): void;
   /** Re-run the island's size animation after a view changed its own height. */
   relayout(): void;
   blip(): void;
 }
+
+/** "delivered": the relay got it. "late": it had already timed out. "failed": no relay reached. */
+export type DecisionResult = "delivered" | "late" | "failed";
 
 export interface ViewHost {
   el: HTMLElement;
@@ -84,10 +93,11 @@ const TABS: { view: IslandViewName; title: string; path: string }[] = [
   { view: "overview", title: "Overview", path: ICONS.house },
   { view: "prompt", title: "Ask Claude", path: ICONS.bubble },
   { view: "upload", title: "Drop a file", path: ICONS.plus },
+  { view: "center", title: "Command center", path: LINE.grid },
 ];
 
 /** Views that already tell the user what is going on: no capsule over them. */
-const SELF_EXPLAINING = new Set<IslandViewName>(["approval", "question", "error", "finished", "confused", "greeting"]);
+const SELF_EXPLAINING = new Set<IslandViewName>(["approval", "question", "error", "finished", "confused", "greeting", "welcome"]);
 
 export function tabIndex(view: IslandViewName): number {
   if (view === "empty") return 0;
@@ -101,7 +111,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     h(
       "button",
       { class: "tab", type: "button", title: t.title, "aria-label": t.title, "data-tab": t.view, onclick: () => go(t.view) },
-      svg(t.path, 13),
+      t.view === "center" ? icon(t.path, 13, 2) : svg(t.path, 13),
     ),
   );
 
@@ -109,6 +119,20 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const soundIcon = svg(ICONS.speakerOn, 14);
   const gearBtn = h("button", { class: "hdr-btn gear", type: "button", title: "Quick settings", "aria-label": "Quick settings", onclick: () => go("settings") }, gearIcon);
   const soundBtn = h("button", { class: "hdr-btn sound", type: "button", title: "Mute", "aria-label": "Mute", onclick: () => actions.toggleSound() }, soundIcon);
+  // Closing is always the user's call: these two are the only ways the open
+  // island gets smaller (with Escape and the tray).
+  const collapseBtn = h("button", { class: "hdr-btn collapse", type: "button", title: "Collapse (Esc)", "aria-label": "Collapse", onclick: () => actions.collapse() }, icon(LINE.chevronUp, 14, 2.2));
+  const hideBtn = h("button", { class: "hdr-btn hide", type: "button", title: "Hide into the top edge", "aria-label": "Hide", onclick: () => actions.hide() }, icon(LINE.retract, 14, 2.1));
+
+  // Screen access must never be invisible: while it is on, this stays up.
+  const screenBadge = h(
+    "button",
+    { class: "screen-badge", type: "button", title: "Coucou can see your screen. Click to stop.", "aria-label": "Stop screen access" },
+    h("i", { class: "rec" }),
+    h("span", { text: "SCREEN ACCESS ACTIVE" }),
+    h("b", { text: "Stop" }),
+  );
+  screenBadge.addEventListener("click", () => void sendTo("settings", "screen-share-stop", null));
 
   // The status capsule: what Claude is doing, visible from every view.
   const capIcon = icon(LINE.sparkle, 11, 2.2);
@@ -139,7 +163,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     { id: "header" },
     h("div", { class: "tabs" }, indicator, ...tabEls),
     capsule,
-    h("div", { class: "header-actions" }, gearBtn, soundBtn),
+    h("div", { class: "header-actions" }, screenBadge, gearBtn, soundBtn, h("i", { class: "hdr-sep" }), collapseBtn, hideBtn),
   );
 
   return {
@@ -159,9 +183,12 @@ export function buildHeader(actions: ViewActions): ViewHost {
       soundBtn.title = muted ? "Unmute" : "Mute";
       setIcon(soundIcon, muted ? ICONS.speakerOff : ICONS.speakerOn);
 
+      screenBadge.classList.toggle("on", State.screen.active);
+
       const phase = primaryPhase(State.tasks, State.focusId);
       const redundant =
-        !phase || SELF_EXPLAINING.has(v) || (v === "overview" && phase.task.id === State.focusId);
+        !phase || SELF_EXPLAINING.has(v) || State.screen.active ||
+        (v === "overview" && phase.task.id === State.focusId);
       capsule.classList.toggle("off", redundant);
       if (phase) {
         capTask = phase.task;
@@ -174,7 +201,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
       } else {
         capTask = null;
       }
-      el.classList.toggle("dim", v === "confused");
+      el.classList.toggle("dim", v === "confused" || v === "welcome");
     },
   };
 }
@@ -455,22 +482,48 @@ function buildApproval(actions: ViewActions): ViewHost {
   let decided: "allow" | "deny" | null = null;
   let timer: number | null = null;
 
-  function decide(d: "allow" | "deny") {
+  const label = (b: HTMLButtonElement, text: string) =>
+    ((b.querySelector(".btn-label") as HTMLElement).textContent = text);
+
+  async function decide(d: "allow" | "deny") {
     if (decided || !State.pendingApproval) return;
     decided = d;
     deny.disabled = true;
     allow.disabled = true;
-    shell.dataset.decided = d;
     const pressed = d === "allow" ? allow : deny;
-    pressed.classList.add("chosen");
-    (pressed.querySelector(".btn-label") as HTMLElement).textContent = d === "allow" ? "Allowed" : "Denied";
-    actions.decide(d);
+    pressed.classList.add("chosen", "sending");
+    label(pressed, d === "allow" ? "Allowing…" : "Denying…");
+    const result = await actions.decide(d);
+    pressed.classList.remove("sending");
+    // Only what the backend confirmed is shown as done.
+    if (result === "delivered") {
+      shell.dataset.decided = d;
+      label(pressed, d === "allow" ? "Allowed" : "Denied");
+    } else {
+      shell.dataset.decided = "late";
+      pressed.classList.remove("chosen");
+      label(pressed, d === "allow" ? "Allow" : "Deny");
+      titleEl.textContent = result === "late" ? "Too late — answer in the terminal" : "Couldn't reach Claude Code";
+      countdown.textContent = "";
+    }
+  }
+
+  /** The relay stopped waiting: the terminal has the question now. */
+  function expire() {
+    if (decided) return;
+    decided = "deny";
+    deny.disabled = true;
+    allow.disabled = true;
+    shell.dataset.decided = "late";
+    titleEl.textContent = "Handed back to the terminal";
+    countdown.textContent = "0:00";
   }
 
   function tickCountdown() {
     const req = State.pendingApproval;
     if (!req || decided) return;
     const left = req.receivedAt + req.timeoutMs - Date.now();
+    if (left <= 0) return expire();
     countdown.textContent = clock(left);
     countdown.classList.toggle("urgent", left < 20_000);
   }
@@ -499,7 +552,8 @@ function buildApproval(actions: ViewActions): ViewHost {
         delete shell.dataset.decided;
         deny.disabled = false;
         allow.disabled = false;
-        for (const b of [deny, allow]) b.classList.remove("chosen");
+        for (const b of [deny, allow]) b.classList.remove("chosen", "sending");
+        titleEl.textContent = "Permission needed";
         (deny.querySelector(".btn-label") as HTMLElement).textContent = "Deny";
         (allow.querySelector(".btn-label") as HTMLElement).textContent = "Allow";
         ring.restart(req.timeoutMs, Date.now() - req.receivedAt);
@@ -667,7 +721,6 @@ function buildNote(actions: ViewActions): ViewHost {
 
 // ── In-island settings ────────────────────────────────────────────────────────
 
-const AUTO_CLOSE = [10, 15, 30];
 
 function buildSettings(actions: ViewActions): ViewHost {
   const soundSwitch = h("button", {
@@ -682,11 +735,6 @@ function buildSettings(actions: ViewActions): ViewHost {
     oninput: (e: Event) => actions.setVolume(Number((e.target as HTMLInputElement).value)),
   }) as HTMLInputElement;
 
-  const autoValue = h("span", { class: "q-value" });
-  const segThumb = h("i", { class: "seg-thumb" });
-  const segButtons = AUTO_CLOSE.map((s) =>
-    h("button", { type: "button", onclick: () => actions.setAutoClose(s) }, `${s}s`),
-  );
   const claudeChip = h("span");
   const apiChip = h("span");
   let apiKey: boolean | null = null;
@@ -699,9 +747,11 @@ function buildSettings(actions: ViewActions): ViewHost {
       "div",
       { class: "settings-row" },
       icon(ICONS.timer, 13, 0),
-      h("span", { class: "q-label", text: "Auto-close" }),
-      autoValue,
-      h("div", { class: "seg" }, segThumb, ...segButtons),
+      h("span", { class: "q-label", text: "Island" }),
+      h("span", { class: "q-value", text: "stays open until you close it" }),
+      h("div", { class: "grow" }),
+      button("Collapse", "ghost", () => actions.collapse(), { icon: LINE.chevronUp }),
+      button("Hide", "ghost", () => actions.hide(), { icon: LINE.retract }),
     ),
     h(
       "div",
@@ -733,11 +783,6 @@ function buildSettings(actions: ViewActions): ViewHost {
       volume.value = String(s.soundVolume);
       volume.style.setProperty("--val", `${(s.soundVolume / 0.2) * 100}%`);
       volume.disabled = !s.soundEnabled;
-      autoValue.textContent = `${Math.round(s.autoCloseInterval)}s`;
-      const idx = AUTO_CLOSE.indexOf(Math.round(s.autoCloseInterval));
-      segButtons.forEach((b, i) => b.classList.toggle("on", i === idx));
-      segThumb.classList.toggle("off", idx < 0);
-      if (idx >= 0) segThumb.style.transform = `translate3d(${idx * 100}%,0,0)`;
 
       claudeChip.replaceChildren(
         statusChip(s.hooksInstalled ? "#22C55E" : "#F4505E", s.hooksInstalled ? "Hooks on" : "Hooks off"),
@@ -774,7 +819,9 @@ export function buildViews(
   map.set("confused", buildConfused());
   map.set("note", buildNote(actions));
   map.set("settings", buildSettings(actions));
-  map.set("prompt", buildPrompt(onChatHeightChange));
+  map.set("prompt", buildPrompt(onChatHeightChange, (page) => actions.openSettingsPage(page)));
+  map.set("center", buildCenter(actions));
+  map.set("welcome", buildWelcome(actions));
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());
   map.set("choose", buildChoose(actions));

@@ -3,7 +3,7 @@
 // `npm run dev` alone.
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Settings } from "./state";
 
@@ -73,8 +73,13 @@ export const Bridge = {
   hooksApply: (install: boolean, fingerprint: string) =>
     callOrThrow<string>("hooks_apply", { install, fingerprint }),
 
+  /**
+   * True when the decision reached a relay still waiting for it; false when the
+   * request had already timed out (Claude Code asked in the terminal). Null
+   * when Rust could not be reached.
+   */
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
-    call<void>("approval_decision", { requestId, decision }),
+    call<boolean>("approval_decision", { requestId, decision }),
   /** "The card is up" — until this lands the relay only waits a moment. */
   approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
   /** "Nobody can act on this" — Claude Code asks in the terminal right away. */
@@ -89,6 +94,10 @@ export const Bridge = {
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
   /** Only ever tells you whether a key exists — never its value. */
   secretPresent: (key: string) => call<boolean>("secret_present", { key }),
+  /** Asks Rust to try the stored key against the Models API. Status only. */
+  claudeCheckKey: () => call<KeyCheck>("claude_check_key"),
+  /** Saves screenshot bytes (JPEG/PNG) into the inbox, as raw IPC — no JSON. */
+  ingestScreenshot: (bytes: Uint8Array) => callRawOrThrow<DroppedFile>("ingest_screenshot", bytes),
   secretSet: (key: string, value: string) => callOrThrow<void>("secret_set", { key, value }),
   secretClear: (key: string) => callOrThrow<void>("secret_clear", { key }),
 
@@ -112,6 +121,11 @@ export type ChatContext =
   | { kind: "file"; name: string; path: string }
   | { kind: "window"; appName: string; title: string; url?: string };
 
+export interface KeyCheck {
+  status: "connected" | "missing" | "rejected" | "unreachable" | "error";
+  detail: string;
+}
+
 export interface DroppedFile {
   name: string;
   path: string;
@@ -131,6 +145,11 @@ export interface HookPreview {
   settingsPath: string;
   /** Hand back to hooksApply so only the reviewed diff is ever written. */
   fingerprint: string;
+}
+
+async function callRawOrThrow<T>(cmd: string, bytes: Uint8Array): Promise<T> {
+  if (!IS_TAURI) throw new Error("not running inside Coucou");
+  return invoke<T>(cmd, bytes);
 }
 
 /** Same as `call`, but surfaces the error so the UI can show what went wrong. */
@@ -176,4 +195,22 @@ export async function onEvent<T>(name: string, handler: (payload: T) => void) {
     return () => devBus.removeEventListener(name, fn);
   }
   return listen<T>(name, (e) => handler(e.payload));
+}
+
+/**
+ * Message another Coucou window ("island" or "settings"). Used for things that
+ * belong to one window but are shown or controlled in the other: screen access
+ * lives in the settings window, its indicator and Stop button in the island.
+ * Outside Tauri it goes on the in-page bus.
+ */
+export async function sendTo(window: "island" | "settings", name: string, payload: unknown) {
+  if (!IS_TAURI) {
+    devEmit(name, payload);
+    return;
+  }
+  try {
+    await emitTo(window, name, payload);
+  } catch (err) {
+    console.error(`[coucou] emit ${name} → ${window} failed`, err);
+  }
 }

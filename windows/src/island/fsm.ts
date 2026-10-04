@@ -1,5 +1,12 @@
-// Island open/close FSM — port of IslandStateMachine.swift.
+// Island open/close FSM — port of IslandStateMachine.swift, minus every timer.
 // No DOM, no Tauri: it only reports transitions.
+//
+// Coucou never closes, collapses or hides on its own. The macOS port folded
+// the island after 15 s without the pointer and hid it after 60 s; this build
+// does neither. Size changes come from exactly two sources:
+//   · the user — a click, Escape, the collapse / hide buttons, the tray;
+//   · something that needs the user — a permission request or a finished
+//     session opens the island (it never closes it).
 
 export type FsmState = "hidden" | "petit" | "home" | "coucou";
 
@@ -8,137 +15,53 @@ export class IslandStateMachine {
 
   onTransition: ((from: FsmState, to: FsmState) => void) | null = null;
 
-  /** home → petit delay, seconds. */
-  homeToPetitDelay = 15;
-  /** petit → hidden delay, seconds. */
-  petitToHiddenDelay = 60;
-  /** coucou → petit once the greeting animation ends (no hover). */
-  greetAutoCollapseDelay = 0.6;
-  /** coucou → petit while the mouse hovers the greeting. */
-  greetHoverCollapseDelay = 10;
-  /** An alert waiting for an answer stays open, even when the mouse leaves. */
+  /**
+   * Kept for callers that mark an alert as waiting for an answer. Nothing
+   * closes the island any more, so it no longer changes behaviour.
+   */
   pinned = false;
-
-  private petitHide: number | null = null;
-  private homeCollapse: number | null = null;
-  private greetCollapse: number | null = null;
 
   // ── Inputs ──────────────────────────────────────────────────────────────────
 
   launch() {
-    this.cancelTimers();
     this.transition("coucou");
   }
 
+  /** The pointer reached the wake strip: peek out. Leaving changes nothing. */
   mouseEntered() {
-    switch (this.state) {
-      case "hidden":
-        this.cancelTimers();
-        this.transition("petit");
-        break;
-      case "petit":
-        this.clear("petitHide");
-        break;
-      case "home":
-        this.clear("homeCollapse");
-        break;
-      case "coucou":
-        this.scheduleGreetCollapse(this.greetHoverCollapseDelay);
-        break;
-    }
+    if (this.state === "hidden") this.transition("petit");
   }
 
-  mouseLeft() {
-    switch (this.state) {
-      case "hidden":
-        break;
-      case "petit":
-        this.schedulePetitHide();
-        break;
-      case "home":
-        this.scheduleHomeCollapse();
-        break;
-      case "coucou":
-        this.clear("greetCollapse");
-        this.transition("petit");
-        break;
-    }
-  }
+  /** Inactivity is not a close request: the island stays as it is. */
+  mouseLeft() {}
 
   click() {
-    if (this.state !== "petit") return;
-    this.cancelTimers();
-    this.transition("home");
+    if (this.state === "petit") this.transition("home");
   }
 
-  /** Greeting animation finished (T.end). Doesn't override a running hover timer. */
+  /** The launch greeting ended: settle into the open island and stay there. */
   greetComplete() {
-    if (this.state !== "coucou") return;
-    if (this.greetCollapse == null) this.scheduleGreetCollapse(this.greetAutoCollapseDelay);
+    if (this.state === "coucou") this.transition("home");
   }
 
-  /** Non-alert work event: show compact from hidden. */
+  /** Non-alert work event: show the compact island if it was hidden. */
   reveal() {
-    if (this.state !== "hidden") return;
-    this.cancelTimers();
-    this.transition("petit");
-    this.schedulePetitHide();
+    if (this.state === "hidden") this.transition("petit");
   }
 
   /** Alert or explicit request: open straight to expanded. */
   forceHome() {
-    this.cancelTimers();
     this.transition("home");
   }
 
-  /// Explicit close (OK button, Escape, an alert being answered).
+  /** Explicit collapse (collapse button, Escape, Done). */
   forcePetit() {
-    this.cancelTimers();
     this.transition("petit");
   }
 
+  /** Explicit hide (hide button, tray). */
   forceHidden() {
-    this.cancelTimers();
     this.transition("hidden");
-  }
-
-  // ── Timers ──────────────────────────────────────────────────────────────────
-
-  private schedulePetitHide() {
-    this.clear("petitHide");
-    this.petitHide = window.setTimeout(() => {
-      this.petitHide = null;
-      if (this.state === "petit") this.transition("hidden");
-    }, this.petitToHiddenDelay * 1000);
-  }
-
-  private scheduleHomeCollapse() {
-    this.clear("homeCollapse");
-    if (this.pinned) return;
-    this.homeCollapse = window.setTimeout(() => {
-      this.homeCollapse = null;
-      if (this.state === "home") this.transition("petit");
-    }, this.homeToPetitDelay * 1000);
-  }
-
-  private scheduleGreetCollapse(delay: number) {
-    this.clear("greetCollapse");
-    this.greetCollapse = window.setTimeout(() => {
-      this.greetCollapse = null;
-      if (this.state === "coucou") this.transition("petit");
-    }, delay * 1000);
-  }
-
-  private clear(which: "petitHide" | "homeCollapse" | "greetCollapse") {
-    const id = this[which];
-    if (id != null) window.clearTimeout(id);
-    this[which] = null;
-  }
-
-  cancelTimers() {
-    this.clear("petitHide");
-    this.clear("homeCollapse");
-    this.clear("greetCollapse");
   }
 
   private transition(next: FsmState) {

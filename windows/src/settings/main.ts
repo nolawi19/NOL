@@ -8,7 +8,11 @@
 //   · preferences are saved through Bridge.saveSettings, which tells the island.
 
 import "./settings.css";
-import { Bridge, onEvent, type HookStatus } from "../core/bridge";
+import { Bridge, onEvent, sendTo, type HookStatus, type KeyCheck } from "../core/bridge";
+import { AVAILABILITY_LABEL, CAPABILITIES, Consent, RISK_LABEL, type ConsentRequest } from "../core/capabilities";
+import { pairedDevices, revokeDevice, shortFingerprint, thisDevice, type PairedDevice } from "../core/devices";
+import { ScreenShare } from "../core/screen";
+import { installPointerFx } from "../fx/pointer";
 import { Sound } from "../core/sound";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear, svg } from "../views/dom";
@@ -144,7 +148,72 @@ function messageSlot(): { el: HTMLElement; show(node: HTMLElement | null): void 
 function card(title: string, desc: string | null, ...children: Node[]): HTMLElement {
   const head = h("header", { class: "card-head" }, h("h2", { text: title }));
   if (desc) head.append(h("p", { text: desc }));
-  return h("section", { class: "card" }, head, ...children);
+  return h("section", { class: "card fx-glass fx-spotlight" }, h("i", { class: "fx-spot" }), head, ...children);
+}
+
+// ── Dialog ────────────────────────────────────────────────────────────────────
+
+interface DialogOptions {
+  title: string;
+  body: string;
+  confirm: string;
+  cancel?: string;
+  danger?: boolean;
+  icon?: string;
+  /** Extra line in a box: what exactly is being approved. */
+  detail?: string;
+  /** Risk chip, for consent requests. */
+  risk?: string;
+}
+
+/** A modal that resolves true only on the confirm button. Esc / Cancel → false. */
+function confirmDialog(o: DialogOptions): Promise<boolean> {
+  return new Promise((resolve) => {
+    const dlg = h("dialog", { class: o.danger ? "dialog danger" : "dialog" }) as HTMLDialogElement;
+    const ok = btn(o.confirm, o.danger ? "danger" : "primary");
+    const no = btn(o.cancel ?? "Cancel", "secondary");
+    const head = h("div", { class: "dialog-head" }, h("span", { class: "dialog-icon" }, ico(o.icon ?? (o.danger ? LINE.trash : LINE.shield), 20, 1.9)));
+    const titleRow = h("div", {}, h("h3", { text: o.title }));
+    if (o.risk) titleRow.append(h("span", { class: "risk", text: o.risk }));
+    head.append(titleRow);
+    dlg.append(head, h("p", { text: o.body }));
+    if (o.detail) dlg.append(h("div", { class: "dialog-detail", text: o.detail }));
+    dlg.append(h("div", { class: "actions end" }, no, ok));
+    let done = false;
+    const finish = (v: boolean) => {
+      if (done) return;
+      done = true;
+      dlg.classList.add("closing");
+      window.setTimeout(() => {
+        dlg.close();
+        dlg.remove();
+      }, 160);
+      resolve(v);
+    };
+    ok.addEventListener("click", () => finish(true));
+    no.addEventListener("click", () => finish(false));
+    dlg.addEventListener("cancel", (e) => {
+      e.preventDefault();
+      finish(false);
+    });
+    document.body.append(dlg);
+    dlg.showModal();
+    // Safe default: focus lands on Cancel, never on the risky choice.
+    no.focus();
+  });
+}
+
+/** How a capability asks for consent in this window. */
+function consentPrompt(req: ConsentRequest): Promise<boolean> {
+  return confirmDialog({
+    title: req.capability.title,
+    body: req.capability.summary,
+    detail: req.detail,
+    confirm: "Allow",
+    cancel: "Don't allow",
+    icon: LINE.shield,
+    risk: RISK_LABEL[req.capability.risk],
+  });
 }
 
 function row(label: string, hint: string | null, ...controls: Node[]): HTMLElement {
@@ -213,7 +282,6 @@ function secretField(def: FieldDef, onChange?: () => void): HTMLElement {
   const saveBtn = btn("Save", "primary");
   const removeBtn = btn("Remove", "ghost", undefined, LINE.trash);
   const msg = messageSlot();
-  let confirmTimer: number | null = null;
 
   function paint() {
     const has = present[def.key] ?? false;
@@ -254,6 +322,7 @@ function secretField(def: FieldDef, onChange?: () => void): HTMLElement {
       msg.show(notice("ok", `Saved to ${VAULT}. It never touches disk and never comes back to this window.`));
       wrap.classList.remove("had-verdict");
       paint();
+      void sendTo("island", "secrets-changed", null);
       onChange?.();
       window.setTimeout(() => {
         setBtnState(saveBtn, "idle");
@@ -269,15 +338,13 @@ function secretField(def: FieldDef, onChange?: () => void): HTMLElement {
   }
 
   async function doRemove() {
-    if (removeBtn.dataset.confirm !== "1") {
-      removeBtn.dataset.confirm = "1";
-      setBtnLabel(removeBtn, "Click to confirm");
-      removeBtn.classList.add("confirm");
-      if (confirmTimer != null) window.clearTimeout(confirmTimer);
-      confirmTimer = window.setTimeout(resetRemove, 3200);
-      return;
-    }
-    resetRemove();
+    const ok = await confirmDialog({
+      title: `Remove ${def.label.toLowerCase()}?`,
+      body: `It will be deleted from ${VAULT}. Anything that uses it stops working until you add it again.`,
+      confirm: "Remove",
+      danger: true,
+    });
+    if (!ok) return;
     setBtnState(removeBtn, "busy");
     try {
       await Bridge.secretClear(def.key);
@@ -285,19 +352,12 @@ function secretField(def: FieldDef, onChange?: () => void): HTMLElement {
       setBtnState(removeBtn, "idle");
       msg.show(notice("info", "Removed."));
       paint();
+      void sendTo("island", "secrets-changed", null);
       onChange?.();
     } catch (err) {
       setBtnState(removeBtn, "failed");
       msg.show(notice("err", `Could not remove: ${String(err).replace(/^Error:\s*/, "")}`));
     }
-  }
-
-  function resetRemove() {
-    if (confirmTimer != null) window.clearTimeout(confirmTimer);
-    confirmTimer = null;
-    delete removeBtn.dataset.confirm;
-    removeBtn.classList.remove("confirm");
-    setBtnLabel(removeBtn, "Remove");
   }
 
   saveBtn.addEventListener("click", () => void doSave());
@@ -497,8 +557,51 @@ function claudePage(): HTMLElement[] {
             ? { level: "warn", msg: "Anthropic keys usually start with sk-ant-. You can still save this one." }
             : null,
     },
-    refreshNav,
+    () => {
+      refreshNav();
+      void runCheck();
+    },
   );
+
+  // Connection: the key is tried against the Models API (no tokens spent).
+  const conn = h("div", { class: "conn" });
+  const testBtn = btn("Test connection", "secondary", () => void runCheck(), LINE.refresh);
+  let checking = false;
+  function paintConn(state: KeyCheck["status"] | "checking" | "unknown", detail: string) {
+    clear(conn);
+    const ok = state === "connected";
+    const bad = state === "rejected" || state === "unreachable" || state === "error";
+    conn.className = `conn ${ok ? "ok" : bad ? "bad" : state === "checking" ? "busy" : "off"}`;
+    conn.append(
+      h("span", { class: "conn-orb" }, h("i"), h("i")),
+      h(
+        "div",
+        { class: "conn-text" },
+        h("b", {
+          text: ok ? "Connected" : state === "checking" ? "Checking…" : state === "missing" ? "Not connected"
+            : state === "rejected" ? "Key rejected" : state === "unreachable" ? "Can't reach Anthropic" : state === "unknown" ? "Not checked yet" : "Something went wrong",
+        }),
+        h("span", { text: detail }),
+      ),
+      testBtn,
+    );
+    testBtn.disabled = state === "checking" || state === "missing";
+  }
+  async function runCheck() {
+    if (checking) return;
+    if (!present["anthropic-api-key"]) {
+      paintConn("missing", "Add a key below to use the chat.");
+      return;
+    }
+    checking = true;
+    paintConn("checking", "Asking api.anthropic.com…");
+    const res = await Bridge.claudeCheckKey();
+    checking = false;
+    if (!res) paintConn("unknown", "Only works inside the Coucou app.");
+    else paintConn(res.status, res.detail);
+  }
+  paintConn(present["anthropic-api-key"] ? "unknown" : "missing", present["anthropic-api-key"] ? "Click Test connection to try your key." : "Add a key below to use the chat.");
+  if (present["anthropic-api-key"]) void runCheck();
 
   const list = h("div", { class: "choices", role: "radiogroup", "aria-label": "Chat model" });
   const models = MODELS.some((m) => m.id === settings.model)
@@ -530,7 +633,19 @@ function claudePage(): HTMLElement[] {
   paint();
 
   return [
-    card("API key", `Used by the chat in the island. It lives in ${VAULT}; the island can only ask whether it exists.`, key),
+    card("Connection", "The island's chat talks to the Anthropic API with your own key.", conn),
+    card("API key", `It lives in ${VAULT}; neither window can read it back — they can only ask whether it exists.`, key),
+    card(
+      "Which Claude is this?",
+      null,
+      h(
+        "dl",
+        { class: "keys" },
+        h("dt", { text: "Chat in the island" }), h("dd", { text: "The Anthropic API, billed to the key above." }),
+        h("dt", { text: "Claude Code" }), h("dd", { text: "Runs in your terminal with its own login. Coucou watches it and answers its permission requests; no key needed here." }),
+        h("dt", { text: "claude.ai" }), h("dd", { text: "The web and desktop app — a separate account and history. Coucou doesn't connect to it." }),
+      ),
+    ),
     card("Chat model", "Applies to the next message you send.", list),
   ];
 }
@@ -662,18 +777,14 @@ function integrationsPage(): HTMLElement[] {
 // General ─────────────────────────────────────────────────────────────────────
 
 function generalPage(): HTMLElement[] {
+  const island = (cmd: string) => () => void sendTo("island", "tray", cmd);
   return [
     card(
-      "Island",
-      null,
-      row(
-        "Auto-close",
-        "How long the open island waits after the pointer leaves. Requests that need you never auto-close.",
-        slider(5, 120, 1, Math.round(settings.autoCloseInterval), (v) => `${v}s`, (v) => {
-          settings.autoCloseInterval = v;
-          saveSoon();
-        }, "Auto-close delay"),
-      ),
+      "The island stays put",
+      "Coucou never closes, collapses or hides on a timer — not when Claude finishes, not when nothing is happening. It changes size only when you ask.",
+      row("Open it", null, btn("Show island", "secondary", island("open"), LINE.chevronDown)),
+      row("Make it small", "The compact island keeps Claude's status in view.", btn("Collapse", "secondary", island("collapse"), LINE.chevronUp)),
+      row("Put it away", "It retracts into the top edge; move the pointer to the top-centre to bring it back.", btn("Hide", "secondary", island("hide"), LINE.retract)),
     ),
     card(
       "Using the island",
@@ -683,9 +794,9 @@ function generalPage(): HTMLElement[] {
         { class: "keys" },
         h("dt", { text: "Top-centre of the screen" }), h("dd", { text: "Mochi peeks out" }),
         h("dt", { text: "Click the small island" }), h("dd", { text: "It opens" }),
-        h("dt", { text: "Esc" }), h("dd", { text: "Closes it (not while a request waits for you)" }),
+        h("dt", { text: "Esc, or the ⌃ button" }), h("dd", { text: "Collapses it (not while a request waits for you)" }),
         h("dt", { text: "Drag a file onto it" }), h("dd", { text: "Mochi swallows it and you can ask about it" }),
-        h("dt", { text: "Tray icon" }), h("dd", { text: "Open, Settings…, Pause, Quit" }),
+        h("dt", { text: "Tray icon" }), h("dd", { text: "Open, Hide island, Settings…, Pause, Quit" }),
       ),
     ),
   ];
@@ -808,6 +919,223 @@ function aboutPage(): HTMLElement[] {
       ),
     ),
     card("Log", "Hook events, permission decisions and poller problems. It stays on your machine.", h("code", { class: "block", text: LOG_PATH })),
+    card(
+      "Introduction",
+      null,
+      row("Replay the introduction", "Shows the first-launch tour and setup checklist in the island again.", btn("Replay", "secondary", () => void sendTo("island", "show-welcome", null), LINE.sparkle)),
+    ),
+  ];
+}
+
+// Screen ──────────────────────────────────────────────────────────────────────
+
+function screenPage(): HTMLElement[] {
+  const st = ScreenShare.current;
+  const status = h(
+    "div",
+    { class: `hero ${st.active ? "live" : "off"}` },
+    h("div", { class: "hero-icon" }, ico(LINE.screen, 22, 1.8)),
+    h(
+      "div",
+      { class: "hero-text" },
+      h("b", { text: st.active ? "SCREEN ACCESS ACTIVE" : "Screen access is off" }),
+      h("span", {
+        text: st.active
+          ? `Coucou can see “${st.label ?? "your screen"}” since ${new Date(st.since ?? Date.now()).toLocaleTimeString()}. Nothing is recorded or sent.`
+          : "Coucou can't see your screen. You choose what to share, and it stays visible in the island until you stop.",
+      }),
+    ),
+  );
+  const msg = messageSlot();
+  const blocks: HTMLElement[] = [status];
+
+  if (!ScreenShare.supported) {
+    blocks.push(card("Not available here", null, notice("warn", "This system's webview doesn't offer screen capture, so Coucou can't see your screen on it.")));
+    return blocks;
+  }
+
+  const actions = h("div", { class: "actions" });
+  if (!st.active) {
+    const share = btn("Share screen…", "primary", async () => {
+      setBtnState(share, "busy");
+      const res = await ScreenShare.start();
+      setBtnState(share, "idle");
+      if (!res.ok) msg.show(notice(res.reason === "cancelled" ? "info" : res.reason === "declined" ? "info" : "err", res.message));
+    }, LINE.screen);
+    actions.append(share);
+  } else {
+    actions.append(btn("Stop sharing", "danger", () => ScreenShare.stop(), LINE.x));
+    const ask = btn("Ask Claude about this", "primary", async () => {
+      setBtnState(ask, "busy");
+      try {
+        const file = await ScreenShare.askClaude();
+        setBtnState(ask, "done");
+        setBtnLabel(ask, "Attached");
+        msg.show(notice("ok", `${file.name} is attached to the chat in the island. Write your question there.`));
+      } catch (err) {
+        setBtnState(ask, "idle");
+        const text = String((err as Error)?.message ?? err);
+        if (text !== "Not attached.") msg.show(notice("err", `Couldn't attach a screenshot: ${text}`));
+      }
+    }, LINE.sparkle);
+    actions.append(ask);
+  }
+
+  const preview = h("div", { class: "screen-preview" });
+  if (st.active && ScreenShare.mediaStream) {
+    const video = h("video", { autoplay: true, muted: true, playsinline: true }) as HTMLVideoElement;
+    video.srcObject = ScreenShare.mediaStream;
+    preview.append(video, h("span", { class: "rec-tag" }, h("i"), h("span", { text: "LIVE · only you can see this" })));
+  } else {
+    preview.append(h("div", { class: "screen-empty" }, ico(LINE.eyeOff, 22, 1.7), h("span", { text: "No preview — nothing is being shared." })));
+  }
+
+  blocks.push(
+    card("Share", "You pick the screen or window in the system picker. Stop here, in the island, or from the system's own sharing bar.", preview, actions, msg.el),
+    card(
+      "What Coucou does with it",
+      null,
+      h(
+        "ul",
+        { class: "bullets" },
+        h("li", { text: "Shows a live preview here, and nothing else, while you share." }),
+        h("li", { text: "“Ask Claude about this” takes one still image after a second confirmation and attaches it to the chat; it reaches Claude only when you send a message." }),
+        h("li", { text: "Nothing is recorded, uploaded in the background, or kept after you stop." }),
+      ),
+    ),
+  );
+  return blocks;
+}
+
+// Devices ─────────────────────────────────────────────────────────────────────
+
+function devicesPage(): HTMLElement[] {
+  const me = h("div", { class: "device me" }, h("div", { class: "device-icon" }, ico(LINE.monitor, 20, 1.8)), h("div", { class: "device-text" }, h("b", { text: "This computer" }), h("span", { text: "Creating this device's identity…" })));
+  const fp = h("code", { class: "fp" });
+  const meCard = card("This computer", "Each Coucou device has its own key pair. Paired devices recognise each other by it.", me, fp);
+  void thisDevice()
+    .then((d) => {
+      clear(me);
+      me.append(
+        h("div", { class: "device-icon" }, ico(LINE.monitor, 20, 1.8)),
+        h("div", { class: "device-text" }, h("b", { text: d.name }), h("span", { text: `${d.platform === "windows" ? "Windows" : d.platform === "macos" ? "macOS" : "Linux"} · identity created ${new Date(d.createdAt).toLocaleDateString()}` })),
+        pill(true, "This device"),
+      );
+      fp.textContent = `Fingerprint ${shortFingerprint(d.fingerprint)} · ECDSA P-256 · private key can't be exported`;
+    })
+    .catch(() => {
+      fp.textContent = "Couldn't create a device identity in this webview.";
+    });
+
+  const list = h("div", { class: "device-list" });
+  const drawList = (devices: PairedDevice[]) => {
+    clear(list);
+    if (devices.length === 0) {
+      list.append(
+        h(
+          "div",
+          { class: "device phone empty" },
+          h("div", { class: "device-icon" }, ico(LINE.phone, 20, 1.8)),
+          h("div", { class: "device-text" }, h("b", { text: "No phone paired" }), h("span", { text: "Pairing needs Coucou Mobile, which isn't available yet." })),
+          (() => {
+            const b = btn("Pair a phone", "secondary", undefined, LINE.plug);
+            b.disabled = true;
+            b.title = "Needs Coucou Mobile";
+            return b;
+          })(),
+        ),
+      );
+      return;
+    }
+    for (const d of devices) {
+      list.append(
+        h(
+          "div",
+          { class: "device phone" },
+          h("div", { class: "device-icon" }, ico(LINE.phone, 20, 1.8)),
+          h("div", { class: "device-text" }, h("b", { text: d.identity.name }), h("span", { text: `Last active ${d.lastSeen ? new Date(d.lastSeen).toLocaleString() : "never"} · ${shortFingerprint(d.identity.fingerprint)}` })),
+          btn("Revoke", "danger", async () => {
+            const ok = await confirmDialog({ title: `Revoke ${d.identity.name}?`, body: "It will no longer be able to connect to this computer until you pair it again.", confirm: "Revoke", danger: true });
+            if (!ok) return;
+            await revokeDevice(d.identity.id);
+            drawList(await pairedDevices());
+          }, LINE.trash),
+        ),
+      );
+    }
+  };
+  void pairedDevices().then(drawList).catch(() => drawList([]));
+
+  const handoff = h(
+    "div",
+    { class: "handoff" },
+    h("div", { class: "handoff-end" }, ico(LINE.monitor, 22, 1.7), h("span", { text: "Computer" })),
+    h("div", { class: "handoff-link" }, h("i"), h("i"), h("i")),
+    h("div", { class: "handoff-end dim" }, ico(LINE.phone, 22, 1.7), h("span", { text: "Phone" })),
+  );
+
+  return [
+    meCard,
+    card("Phones", "A paired phone could follow Claude's activity and answer permission requests away from your desk.", list),
+    card(
+      "Handoff",
+      "Moving a chat or a watched Claude Code session between devices, with its context. Architecture ready — it needs Coucou Mobile on the other end, so nothing here is connected.",
+      handoff,
+      h(
+        "dl",
+        { class: "keys" },
+        h("dt", { text: "What travels" }), h("dd", { text: "Conversation, current task and state, session id, both device identities — signed by this computer's key." }),
+        h("dt", { text: "Pairing" }), h("dd", { text: "QR code with a one-time secret, then the same 6-digit code on both screens. Expires after 2 minutes." }),
+        h("dt", { text: "Connection" }), h("dd", { text: "Same network first, a relay otherwise; heartbeat every 15 s, reconnect with backoff, duplicates ignored." }),
+        h("dt", { text: "Specification" }), h("dd", { text: "docs/DEVICES.md in the Coucou repository." }),
+      ),
+    ),
+  ];
+}
+
+// Permissions ─────────────────────────────────────────────────────────────────
+
+function permissionsPage(): HTMLElement[] {
+  const grants = h("div", { class: "grants" });
+  const drawGrants = () => {
+    clear(grants);
+    const active = Consent.active;
+    if (active.length === 0) {
+      grants.append(h("div", { class: "grant empty" }, ico(LINE.shieldCheck, 16, 1.9), h("span", { text: "Nothing is allowed right now beyond Claude Code hooks and the keys you saved." })));
+      return;
+    }
+    for (const g of active) {
+      const cap = CAPABILITIES.find((c) => c.id === g.capability)!;
+      grants.append(
+        h(
+          "div",
+          { class: "grant" },
+          h("span", { class: `risk-dot ${cap.risk}` }),
+          h("div", { class: "grant-text" }, h("b", { text: cap.title }), h("span", { text: `${g.detail} · since ${new Date(g.at).toLocaleTimeString()}` })),
+          btn("Revoke", "danger", () => Consent.revoke(g.capability), LINE.x),
+        ),
+      );
+    }
+  };
+  drawGrants();
+
+  const matrix = h(
+    "div",
+    { class: "caps" },
+    ...CAPABILITIES.map((c) =>
+      h(
+        "div",
+        { class: `cap ${c.availability}` },
+        h("div", { class: "cap-head" }, h("b", { text: c.title }), h("span", { class: `chip risk ${c.risk}`, text: RISK_LABEL[c.risk] }), h("span", { class: `chip avail ${c.availability}`, text: AVAILABILITY_LABEL[c.availability] })),
+        h("p", { text: c.summary }),
+        c.blocker ? h("p", { class: "cap-blocker", text: c.blocker }) : null,
+      ),
+    ),
+  );
+
+  return [
+    card("Allowed right now", "Grants last until you revoke them or quit Coucou. High-risk access is asked for every time.", grants),
+    card("What Coucou can do", "Everything Coucou can or might do on this computer, how risky it is, and whether it exists yet. Nothing on this list acts without the permission shown.", matrix),
   ];
 }
 
@@ -819,6 +1147,9 @@ const PAGES: Page[] = [
   { id: "sound", title: "Sound", subtitle: "What Mochi sounds like.", icon: LINE.speaker, render: soundPage, status: () => (settings.soundEnabled ? null : false) },
   { id: "display", title: "Display", subtitle: "Which screen the island lives on.", icon: LINE.monitor, render: displayPage },
   { id: "startup", title: "Startup", subtitle: "When Coucou starts.", icon: LINE.power, render: startupPage },
+  { id: "screen", title: "Screen", subtitle: "Let Coucou see your screen — only when you say so.", icon: LINE.screen, render: screenPage, status: () => (ScreenShare.current.active ? true : null) },
+  { id: "devices", title: "Devices", subtitle: "This computer, and the phones it may one day pair with.", icon: LINE.phone, render: devicesPage },
+  { id: "permissions", title: "Permissions", subtitle: "What Coucou may do, and what you've allowed.", icon: LINE.shield, render: permissionsPage },
   { id: "about", title: "About", subtitle: "Privacy, files and version.", icon: LINE.info, render: aboutPage },
 ];
 
@@ -940,6 +1271,22 @@ async function main() {
   }));
 
   if (!PAGES.some((p) => p.id === current)) current = PAGES[0].id;
+  installPointerFx();
+  Consent.setPrompt(consentPrompt);
+  ScreenShare.wire();
+  // Screen access and grants change from elsewhere (the island's Stop, the
+  // system bar): keep those pages truthful.
+  ScreenShare.subscribe(() => {
+    refreshNav();
+    if (current === "screen" || current === "permissions") renderPage(false);
+  });
+  Consent.subscribe(() => {
+    if (current === "permissions") renderPage(false);
+  });
+  // The island asks for a specific page ("Set up", "API key", "Screen"…).
+  void onEvent<string>("settings-page", (id) => {
+    if (PAGES.some((p) => p.id === id)) go(id);
+  });
   clear(root);
   root.append(buildShell());
   document.body.classList.add("ready");

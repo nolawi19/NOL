@@ -130,3 +130,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
+
+/// Largest screenshot accepted from the island (a 4K JPEG is well under this).
+const MAX_SCREENSHOT: usize = 12 * 1024 * 1024;
+
+/// Writes a screenshot the user explicitly took (Settings → Screen) into the
+/// inbox, so the chat can attach it exactly like a dropped file. Only JPEG and
+/// PNG bytes are accepted: the webview never chooses a path or an extension.
+pub fn ingest_screenshot(bytes: &[u8]) -> Result<DroppedFile, String> {
+    if bytes.len() > MAX_SCREENSHOT {
+        return Err("That screenshot is too large.".into());
+    }
+    let ext = if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "jpg"
+    } else if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        "png"
+    } else {
+        return Err("Not an image.".into());
+    };
+
+    let dir = inbox_dir();
+    crate::platform::ensure_private_dir(&settings::local_dir()).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let t = crate::platform::local_time();
+    let stem = format!(
+        "screen-{:04}{:02}{:02}-{:02}{:02}{:02}",
+        t.year, t.month, t.day, t.hour, t.minute, t.second
+    );
+    let mut name = format!("{stem}.{ext}");
+    let mut dest = dir.join(&name);
+    for i in 2..1000 {
+        if !dest.exists() {
+            break;
+        }
+        name = format!("{stem} ({i}).{ext}");
+        dest = dir.join(&name);
+    }
+    std::fs::write(&dest, bytes).map_err(|e| format!("cannot save: {e}"))?;
+    Ok(DroppedFile { name, path: dest.to_string_lossy().to_string(), size: bytes.len() as u64 })
+}
+
+#[cfg(test)]
+mod screenshot_tests {
+    use super::*;
+
+    #[test]
+    fn screenshot_rejects_anything_but_jpeg_or_png() {
+        assert!(ingest_screenshot(b"").is_err());
+        assert!(ingest_screenshot(b"GIF89a....").is_err());
+        assert!(ingest_screenshot(b"<script>alert(1)</script>").is_err());
+        // A PNG signature cut short is not a PNG.
+        assert!(ingest_screenshot(&[0x89, b'P', b'N', b'G']).is_err());
+    }
+
+    #[test]
+    fn screenshot_rejects_oversized_input_before_writing() {
+        let mut big = vec![0xFF, 0xD8, 0xFF];
+        big.resize(MAX_SCREENSHOT + 1, 0);
+        match ingest_screenshot(&big) {
+            Err(err) => assert!(err.contains("too large")),
+            Ok(_) => panic!("an oversized screenshot was accepted"),
+        }
+    }
+}

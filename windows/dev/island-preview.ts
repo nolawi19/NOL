@@ -66,6 +66,11 @@ export const scenarios: Record<string, () => void | Promise<void>> = {
   "Quick settings": () => devEmit("tray", "settings"),
   "Pause / resume": () => devEmit("tray", "pause"),
   "Light desktop": () => document.body.classList.toggle("light"),
+  "Replay intro": () => devEmit("show-welcome", null),
+  // Stands in for the settings window, which holds the real capture.
+  "Screen access on": () => devEmit("screen-share", { active: true, label: "Entire screen", since: Date.now() }),
+  "Screen access off": () => devEmit("screen-share", { active: false, label: null, since: null }),
+  "Hide (tray)": () => devEmit("tray", "hide"),
   "Full demo": async () => {
     hook("SessionStart");
     await wait(600);
@@ -94,6 +99,7 @@ const groups: [string, string[]][] = [
   ["Needs you", ["Permission", "Long permission", "Question", "Rate limit"]],
   ["Ends", ["Stop", "Stop failure", "Session end"]],
   ["Integrations & app", ["Vercel deploy", "GitHub stats", "Open island", "Quick settings", "Pause / resume", "Light desktop", "Full demo"]],
+  ["Shell", ["Replay intro", "Screen access on", "Screen access off", "Hide (tray)"]],
 ];
 for (const [title, names] of groups) {
   const b = document.createElement("b");

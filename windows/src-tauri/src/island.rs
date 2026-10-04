@@ -27,6 +27,11 @@ pub const WINDOW_LABEL: &str = "island";
 /// Wider than the macOS 6 pt because a click must never be swallowed.
 const HIT_MARGIN: f64 = 14.0;
 
+/// Around the panel the cursor is reported every tick; further away, at most
+/// every FAR_EMIT_EVERY.
+const NEAR_MARGIN: f64 = 160.0;
+const FAR_EMIT_EVERY: Duration = Duration::from_millis(100);
+
 #[derive(Serialize, Clone)]
 pub struct CursorPayload {
     pub x: f64,
@@ -206,6 +211,8 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
             gate.wait_until_active();
             let mut last = (f64::MIN, f64::MIN);
             let mut ticks: u32 = 0;
+            let mut last_emit = std::time::Instant::now();
+            let mut was_near = true;
             while gate.is_active() {
                 std::thread::sleep(Duration::from_millis(period));
 
@@ -279,6 +286,20 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                     let _ = win.set_ignore_cursor_events(!accept);
                 }
 
+                // The island now stays on screen until the user closes it, so
+                // the poll runs for as long as the app does. Far from the panel
+                // only Mochi's gaze needs the cursor: 10 updates a second is
+                // plenty, and spares the webview 50 wake-ups a second while
+                // the user works elsewhere.
+                let near = x >= -NEAR_MARGIN
+                    && x <= size.0 + NEAR_MARGIN
+                    && y >= -NEAR_MARGIN
+                    && y <= size.1 + NEAR_MARGIN;
+                if !near && last_emit.elapsed() < FAR_EMIT_EVERY && was_near == near {
+                    continue;
+                }
+                was_near = near;
+                last_emit = std::time::Instant::now();
                 let _ = win.emit("cursor", CursorPayload { x, y });
             }
         }

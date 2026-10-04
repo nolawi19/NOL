@@ -6,6 +6,7 @@ import { onEvent, Bridge, type IntegrationUpdate } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import type { Island } from "./island";
+import { LINE } from "../views/icons";
 
 /** Which Credential Manager key backs each pill. */
 const KEY_FOR: Record<string, string> = {
@@ -62,6 +63,13 @@ function handle(island: Island, update: IntegrationUpdate) {
         task.pillBadge = event.success ? "finished" : "error";
       }
       Sound.play(event.success ? "finish" : "error");
+      State.log({
+        text: `${task.name} · ${event.label}`,
+        detail: event.detail ?? undefined,
+        tone: event.success ? "success" : "error",
+        icon: event.success ? LINE.checkCircle : LINE.xCircle,
+        color: event.success ? "#34D399" : "#F4505E",
+      });
       State.showFlash(
         `${task.name} · ${event.label}`,
         event.success ? "#34D399" : "#F4505E",

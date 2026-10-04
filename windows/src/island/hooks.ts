@@ -5,7 +5,8 @@
 
 import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
-import { STATE_COLOR, toolVerb } from "../core/activity";
+import { STATE_COLOR, kindIcon, toolKind, toolVerb } from "../core/activity";
+import { LINE } from "../views/icons";
 import { State, type AgentTask } from "../core/state";
 import type { Island } from "./island";
 
@@ -117,6 +118,11 @@ function approvalTarget(input: Record<string, unknown>): string {
 
 /** Coucou answers within this long or not at all (see pipe.rs DECISION_TIMEOUT). */
 const APPROVAL_TIMEOUT_MS = 110_000;
+/**
+ * How long the Rust side keeps the relay waiting (pipe.rs DECISION_TIMEOUT).
+ * The countdown shows this one: past it, a click can no longer land.
+ */
+const DECISION_WINDOW_MS = 108_000;
 
 function upsert(projectName: string, cwd: string) {
   const t = State.tasks.find((x) => x.id === CLAUDE_ID);
@@ -197,6 +203,7 @@ function handleHook(island: Island, payload: HookPayload) {
     case "SessionStart":
       ensurePill();
       touchSession(agentId);
+      State.log({ text: "Session started", detail: projectName, tone: "info", icon: LINE.terminal, color: "#9AA3B2" });
       surface("overview", false);
       Sound.play("work");
       break;
@@ -215,6 +222,7 @@ function handleHook(island: Island, payload: HookPayload) {
       // The field is `prompt`; reading `message` meant this step was always blank.
       const asked = payload.prompt ?? payload.message;
       if (asked) State.appendStep(agentId, asked.slice(0, 60));
+      State.log({ text: "Prompt", detail: asked?.slice(0, 120), tone: "active", icon: LINE.sparkle, color: STATE_COLOR.thinking });
       surface("overview", false);
       break;
     }
@@ -228,7 +236,9 @@ function handleHook(island: Island, payload: HookPayload) {
       }
       State.updateTask(agentId, "working");
       const tool = payload.tool_name ?? "Tool";
-      State.appendStep(agentId, stepLabel(tool, payload.tool_input ?? {}));
+      const step = stepLabel(tool, payload.tool_input ?? {});
+      State.appendStep(agentId, step);
+      State.log({ text: step, tone: "active", icon: kindIcon(toolKind(tool)), color: STATE_COLOR.working });
       surface("overview", false);
       break;
     }
@@ -240,6 +250,7 @@ function handleHook(island: Island, payload: HookPayload) {
     case "PostToolUseFailure":
       State.updateTask(agentId, "working");
       State.appendStep(agentId, "⚠ failed");
+      State.log({ text: "Tool failed", tone: "error", icon: LINE.xCircle, color: STATE_COLOR.error });
       break;
 
     case "Notification": {
@@ -251,12 +262,14 @@ function handleHook(island: Island, payload: HookPayload) {
       } else if (message.trim().endsWith("?")) {
         State.updateTask(agentId, "question");
         State.appendStep(agentId, message);
+        State.log({ text: "Question", detail: message, tone: "alert", icon: LINE.ask, color: STATE_COLOR.question });
       }
       break;
     }
 
     case "Stop":
       State.updateTask(agentId, "finished");
+      State.log({ text: "Finished", detail: payload.message?.slice(0, 120), tone: "success", icon: LINE.checkCircle, color: STATE_COLOR.finished });
       if (payload.message) State.appendStep(agentId, payload.message.slice(0, 60));
       Sound.play("finish");
       if (focused) surface("finished", true);
@@ -276,6 +289,7 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "StopFailure":
       State.updateTask(agentId, "error");
+      State.log({ text: "Stopped on an error", detail: payload.message?.slice(0, 120), tone: "error", icon: LINE.xCircle, color: STATE_COLOR.error });
       Sound.play("error");
       if (focused) surface("error", true);
       else {
@@ -330,7 +344,7 @@ function handleHook(island: Island, payload: HookPayload) {
         command: target ? `${tool} · ${target}` : tool,
         target,
         receivedAt: Date.now(),
-        timeoutMs: APPROVAL_TIMEOUT_MS,
+        timeoutMs: DECISION_WINDOW_MS,
       };
       State.detailExpanded = false;
       // The relay's short ack window closes in 800 ms; everything below this
@@ -338,6 +352,7 @@ function handleHook(island: Island, payload: HookPayload) {
       if (requestId) void Bridge.approvalAck(requestId);
       State.updateTask(CLAUDE_ID, "approval");
       State.isPinned = true;
+      State.log({ text: "Permission requested", detail: State.pendingApproval.command, tone: "alert", icon: LINE.shield, color: STATE_COLOR.approval });
       Sound.play("approval");
       if (focused) {
         island.alert("approval");
@@ -353,11 +368,15 @@ function handleHook(island: Island, payload: HookPayload) {
       pendingTimeout = window.setTimeout(() => {
         pendingTimeout = null;
         if (!State.pendingApproval) return;
+        const expired = State.pendingApproval;
         State.pendingApproval = null;
         State.isPinned = false;
         island.dropPin();
-        State.updateTask(CLAUDE_ID, "working");
+        // Nobody answered in time: Claude Code is asking in the terminal now.
+        State.updateTask(CLAUDE_ID, "question");
+        State.appendStep(CLAUDE_ID, "Permission · answer in the terminal");
         State.setPillBadge(CLAUDE_ID, null);
+        State.log({ text: "Permission expired", detail: expired.command, tone: "alert", icon: LINE.hourglass, color: "#F5A524" });
         if (State.view === "approval") island.setView(State.defaultView());
         State.notify();
       }, APPROVAL_TIMEOUT_MS);

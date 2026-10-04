@@ -21,7 +21,9 @@ export type IslandViewName =
   | "result"
   | "note"
   | "settings"
-  | "greeting";
+  | "greeting"
+  | "welcome"
+  | "center";
 
 export type BotStateName =
   | "idle"
@@ -92,6 +94,10 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   note: { height: 160, botX: 60, botY: null, botDiameter: 50, agentMode: "column" },
   settings: { height: 160, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
+  // First launch: Mochi sits in the heart of the energy core on the left.
+  welcome: { height: 288, botX: 105, botY: 155, botDiameter: 64, agentMode: "none" },
+  // Command center: Mochi watches from the corner of the activity panel.
+  center: { height: 288, botX: 46, botY: 64, botDiameter: 26, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually

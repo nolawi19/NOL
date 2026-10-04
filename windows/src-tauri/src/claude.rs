@@ -157,6 +157,49 @@ pub async fn send(
     Ok(ChatReply { text })
 }
 
+/// Result of checking the stored key against the API.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyCheck {
+    /// "connected", "missing", "rejected", "unreachable" or "error".
+    pub status: &'static str,
+    /// Human-readable detail. Never contains the key.
+    pub detail: String,
+}
+
+/// Asks the Models API (GET /v1/models, the cheapest authenticated call — no
+/// tokens are spent) whether the stored key is accepted. The key never leaves
+/// Rust; only a status comes back.
+pub async fn check_key() -> KeyCheck {
+    let Some(key) = secrets::get("anthropic-api-key") else {
+        return KeyCheck { status: "missing", detail: "No key saved yet.".into() };
+    };
+    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build() {
+        Ok(c) => c,
+        Err(_) => return KeyCheck { status: "error", detail: "Could not start a network client.".into() },
+    };
+    let response = client
+        .get("https://api.anthropic.com/v1/models?limit=1")
+        .header("x-api-key", key)
+        .header("anthropic-version", ANTHROPIC_VERSION)
+        .send()
+        .await;
+    match response {
+        // reqwest errors carry the URL, never request headers, but say nothing
+        // more specific than this anyway.
+        Err(_) => KeyCheck { status: "unreachable", detail: "Couldn't reach api.anthropic.com. Check your connection.".into() },
+        Ok(r) => match r.status().as_u16() {
+            200..=299 => KeyCheck { status: "connected", detail: "The Anthropic API accepted your key.".into() },
+            // Authenticated but throttled: the key itself is fine.
+            429 => KeyCheck { status: "connected", detail: "Key accepted — the API is rate-limiting you right now.".into() },
+            401 => KeyCheck { status: "rejected", detail: "The API rejected this key (401). It may be revoked or mistyped.".into() },
+            403 => KeyCheck { status: "rejected", detail: "This key isn't allowed to use the API (403).".into() },
+            code if code >= 500 => KeyCheck { status: "unreachable", detail: format!("Anthropic returned {code}. Try again in a moment.") },
+            code => KeyCheck { status: "error", detail: format!("Unexpected answer from the API ({code}).") },
+        },
+    }
+}
+
 async fn call(key: &str, body: &Value) -> Result<Value, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(90))

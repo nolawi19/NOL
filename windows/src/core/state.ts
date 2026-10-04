@@ -105,6 +105,10 @@ export interface IntegrationInfo {
 export interface Settings {
   soundEnabled: boolean;
   soundVolume: number;
+  /**
+   * Legacy: the island no longer closes on a timer. Still sent so settings.json
+   * stays readable by older builds (the Rust struct requires it); never shown.
+   */
   autoCloseInterval: number;
   absenceInterval: number;
   activeIntegrations: string[];
@@ -113,6 +117,8 @@ export interface Settings {
   hooksInstalled: boolean;
   /** Claude model used by the chat. */
   model: string;
+  /** The first-launch introduction has been completed. */
+  onboarded: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -127,7 +133,31 @@ export const DEFAULT_SETTINGS: Settings = {
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",
+  onboarded: false,
 };
+
+/** One line of the activity timeline (command center). */
+export interface TimelineEntry {
+  id: number;
+  /** Wall-clock ms. */
+  at: number;
+  text: string;
+  detail?: string;
+  tone: "active" | "alert" | "success" | "error" | "info";
+  /** A line icon path (views/icons.ts LINE). */
+  icon: string;
+  color: string;
+}
+
+/** Screen access, as reported by the window that holds the capture. */
+export interface ScreenAccess {
+  active: boolean;
+  label: string | null;
+  since: number | null;
+}
+
+const TIMELINE_MAX = 40;
+let timelineId = 1;
 
 type Listener = () => void;
 
@@ -161,6 +191,16 @@ class AppState {
   /** Approval / question card showing the full text instead of two lines. */
   detailExpanded = false;
   flash: Flash | null = null;
+  /** Newest first. Real events only: hooks, decisions, integrations, chat. */
+  timeline: TimelineEntry[] = [];
+  screen: ScreenAccess = { active: false, label: null, since: null };
+  /** Whether the stored Anthropic key was last seen working (null = unknown). */
+  apiConnected: boolean | null = null;
+  /** Whether a key is saved at all (null = not asked yet). */
+  apiKeyPresent: boolean | null = null;
+  /** The display the island lives on, from Rust at boot (logical px). */
+  display: { width: number; height: number; scale: number } | null = null;
+  version = "";
   private flashTimer: number | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
@@ -286,6 +326,11 @@ class AppState {
       this.settings.activeIntegrations = [...active, id];
     }
     this.loadIntegrationTasks();
+  }
+
+  log(entry: Omit<TimelineEntry, "id" | "at">) {
+    this.timeline.unshift({ ...entry, id: timelineId++, at: Date.now() });
+    if (this.timeline.length > TIMELINE_MAX) this.timeline.length = TIMELINE_MAX;
   }
 
   /** Shows a transient line in the compact island for a few seconds. */

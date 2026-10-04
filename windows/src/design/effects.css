@@ -1,0 +1,255 @@
+/* Coucou effects engine — reusable surface and motion effects, shared by the
+   island and the settings window. Components opt in with a class; nothing here
+   runs unless an element asks for it.
+
+   Cost rules, in order of preference:
+     1. static paint (gradients, masks, hairlines)            — free after first paint
+     2. transform / opacity animation                          — compositor only
+     3. one-shot paint animation (scan sweep)                  — short, then idle
+     4. continuous paint (aurora angle via @property)          — alert states only
+   backdrop-filter is used on a handful of surfaces, never on scrolling lists.  */
+
+/* Typed custom properties: interpolatable, so they can be transitioned and
+   animated (and they don't inherit unless asked). */
+@property --fx-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@property --fx-glow {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+/* ── Liquid glass ───────────────────────────────────────────────────────── */
+
+.fx-glass {
+  --glass-tint: rgba(255, 255, 255, 0.04);
+  position: relative;
+  isolation: isolate;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.012) 42%, rgba(255, 255, 255, 0.02)),
+    var(--glass-tint);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.02),
+    0 1px 0 rgba(0, 0, 0, 0.55),
+    0 12px 30px -18px rgba(0, 0, 0, 0.9);
+}
+
+/* The rim: brighter at the top-left where the light comes from, fading
+   round the edge — drawn as a masked gradient, not a border. */
+.fx-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    150deg,
+    rgba(255, 255, 255, 0.26),
+    rgba(255, 255, 255, 0.06) 30%,
+    rgba(255, 255, 255, 0.025) 60%,
+    rgba(255, 255, 255, 0.1)
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+}
+
+/* Holographic edge: a thin iridescent rim, static. */
+.fx-holo::before {
+  background: linear-gradient(
+    120deg,
+    rgba(125, 211, 252, 0.4),
+    rgba(167, 139, 250, 0.18) 25%,
+    rgba(255, 255, 255, 0.04) 50%,
+    rgba(244, 114, 182, 0.18) 75%,
+    rgba(253, 224, 71, 0.3)
+  );
+}
+
+/* ── Aurora rim (continuous: only while something waits on the user) ────── */
+
+.fx-aurora {
+  --fx-a1: var(--accent, #7aaaff);
+  --fx-a2: #a78bfa;
+  --fx-a3: #22d3ee;
+}
+
+.fx-aurora::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--fx-angle),
+    transparent 0deg,
+    var(--fx-a1) 50deg,
+    var(--fx-a2) 110deg,
+    transparent 170deg,
+    transparent 190deg,
+    var(--fx-a3) 250deg,
+    var(--fx-a1) 310deg,
+    transparent 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  opacity: 0.9;
+  animation: fx-aurora 3.6s linear infinite;
+}
+
+@keyframes fx-aurora {
+  to { --fx-angle: 360deg; }
+}
+
+/* ── Cursor spotlight (vars set by fx/pointer.ts, in element pixels) ─────── */
+
+.fx-spotlight {
+  --mx: -999px;
+  --my: -999px;
+}
+
+.fx-spotlight > .fx-spot,
+.fx-spotlight::after {
+  pointer-events: none;
+}
+
+.fx-spot {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(260px circle at var(--mx) var(--my), rgba(255, 255, 255, 0.075), transparent 62%);
+  opacity: 0;
+  transition: opacity var(--dur-slow) var(--ease-out);
+}
+
+.fx-spotlight.lit > .fx-spot {
+  opacity: 1;
+}
+
+/* ── Scan sweep (one-shot: add .run to replay) ──────────────────────────── */
+
+.fx-scan {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.fx-scan::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 40%;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    color-mix(in srgb, var(--accent, #7aaaff) 16%, transparent) 70%,
+    color-mix(in srgb, var(--accent, #7aaaff) 55%, transparent) 98%,
+    transparent
+  );
+  transform: translate3d(0, -110%, 0);
+  opacity: 0;
+}
+
+.fx-scan.run::after {
+  animation: fx-scan 1.1s var(--ease-in-out) 1;
+}
+
+@keyframes fx-scan {
+  0% { transform: translate3d(0, -110%, 0); opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translate3d(0, 260%, 0); opacity: 0; }
+}
+
+/* Static scanline texture for holographic surfaces. */
+.fx-scanlines {
+  background-image: repeating-linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.022) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+/* ── Depth ──────────────────────────────────────────────────────────────── */
+
+.fx-depth-1 { box-shadow: var(--shadow-1); }
+.fx-depth-2 { box-shadow: var(--shadow-2); }
+.fx-depth-3 { box-shadow: var(--shadow-3); }
+
+/* ── Magnetic & tilt (vars set by fx/pointer.ts) ────────────────────────── */
+
+.fx-magnetic {
+  --mg-x: 0px;
+  --mg-y: 0px;
+  translate: var(--mg-x) var(--mg-y);
+  transition: translate var(--dur-slower) var(--ease-spring-soft);
+}
+
+.fx-magnetic.pulling {
+  transition: translate 90ms linear;
+}
+
+.fx-tilt {
+  --tilt-x: 0deg;
+  --tilt-y: 0deg;
+  transform: perspective(700px) rotateX(var(--tilt-x)) rotateY(var(--tilt-y));
+  transition: transform var(--dur-slower) var(--ease-spring-soft);
+}
+
+/* ── Particles (CSS only: each <i> drifts on its own transform loop) ───── */
+
+.fx-particles {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.fx-particles i {
+  position: absolute;
+  left: var(--px, 50%);
+  top: var(--py, 50%);
+  width: var(--ps, 2px);
+  height: var(--ps, 2px);
+  border-radius: 50%;
+  background: var(--pc, rgba(186, 230, 253, 0.9));
+  box-shadow: 0 0 6px var(--pc, rgba(186, 230, 253, 0.9));
+  opacity: 0;
+  animation: fx-drift var(--pd, 7s) var(--ease-in-out) var(--pdelay, 0s) infinite;
+}
+
+@keyframes fx-drift {
+  0% { opacity: 0; transform: translate3d(0, 0, 0) scale(0.6); }
+  20% { opacity: var(--po, 0.8); }
+  80% { opacity: var(--po, 0.8); }
+  100% { opacity: 0; transform: translate3d(var(--dx, 12px), var(--dy, -40px), 0) scale(1); }
+}
+
+/* ── Animated gradient text ─────────────────────────────────────────────── */
+
+.fx-gradient-text {
+  background: linear-gradient(100deg, #f5f6f8 0%, #bcd4ff 30%, #e2d5ff 55%, #f5f6f8 80%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.fx-gradient-text.moving {
+  animation: cc-shimmer 6s linear infinite;
+}

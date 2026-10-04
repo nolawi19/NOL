@@ -2,10 +2,10 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring, clamp } from "../core/anim";
-import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
+import { Bridge, IS_TAURI, onDragDrop, sendTo } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
-  ROUNDED_CORNER, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
+  ROUNDED_CORNER, botPosition, chatPromptHeight,
   islandSize,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
@@ -16,12 +16,13 @@ import { Greeting } from "../mochi/greeting";
 import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
-import { buildHeader, buildViews, tabIndex, type ViewActions, type ViewHost } from "../views/views";
+import { buildHeader, buildViews, tabIndex, type DecisionResult, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
 import { icon, setIcon, TextSwap } from "../views/ui";
 import { LINE } from "../views/icons";
 import { primaryPhase, STATE_COLOR, type Phase } from "../core/activity";
 import { IslandStateMachine } from "./fsm";
+import { EnergyCore, type CoreKind } from "./core";
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -46,10 +47,15 @@ export class Island {
   private contentEl!: HTMLElement;
   private viewsEl!: HTMLElement;
   private botCanvas!: HTMLCanvasElement;
-  private botGlow!: HTMLElement;
+  private core = new EnergyCore();
+  private ring!: HTMLElement;
+  private scan!: HTMLElement;
+  /** Cursor over the island, −1…1 from its centre (0 when away). */
+  private parallax = { x: 0, y: 0 };
+  private prevHeight = 0;
+  private lastTone = "idle";
   private greetingCanvas!: HTMLCanvasElement;
   private miniGrid!: HTMLElement;
-  private countdown!: HTMLElement;
   private wakeStrip!: HTMLElement;
   private shoulderL!: HTMLElement;
   private shoulderR!: HTMLElement;
@@ -87,7 +93,6 @@ export class Island {
   private wasInIsland = false;
   /** Last shape handed to Rust for the click-through test. */
   private pushedRect = { x: -1, y: -1, w: -1, h: -1 };
-  private homeCollapseAt: number | null = null;
 
   // Bot hover → love (IslandWindowController.botHoverIn)
   private botHovering = false;
@@ -151,25 +156,58 @@ export class Island {
       },
       openN8n: () => void Bridge.openN8n(),
       relayout: () => this.animateGeometry(!State.detailExpanded),
-      decide: (d) => {
+      openSettingsPage: (page) => {
+        void Bridge.openSettingsWindow();
+        void sendTo("settings", "settings-page", page);
+      },
+      decide: async (d) => {
         const req = State.pendingApproval;
         void Bridge.log(`decide ${d} req=${req?.requestId ?? "none"}`);
-        if (!req) return;
-        Sound.play(d === "deny" ? "blip" : "approve");
-        // The decision leaves right now; only the card lingers, long enough to
-        // show what was chosen.
-        void Bridge.approvalDecision(req.requestId, d);
-        State.pendingApproval = null;
-        State.isPinned = false;
-        this.fsm.pinned = false;
-        State.updateTask("integration_claude", "working");
+        if (!req) return "late";
+        const answer = await Bridge.approvalDecision(req.requestId, d);
+        // Outside the app there is no relay to answer; the preview treats the
+        // click as delivered. Inside it, only Rust's word counts.
+        const result: DecisionResult = !IS_TAURI ? "delivered" : answer === true ? "delivered" : answer === false ? "late" : "failed";
+
+        // Another request may have replaced this one while we waited.
+        if (State.pendingApproval?.requestId === req.requestId) {
+          State.pendingApproval = null;
+          State.isPinned = false;
+          this.fsm.pinned = false;
+        }
         State.setPillBadge("integration_claude", null);
+        if (result === "delivered") {
+          Sound.play(d === "deny" ? "blip" : "approve");
+          State.updateTask("integration_claude", "working");
+          State.log({
+            text: d === "allow" ? "Allowed" : "Denied",
+            detail: req.command,
+            tone: d === "allow" ? "success" : "info",
+            icon: d === "allow" ? LINE.check : LINE.x,
+            color: d === "allow" ? "#34D399" : "#9AA3B2",
+          });
+        } else {
+          // Claude Code took the question back to the terminal: say so.
+          Sound.play("error");
+          State.updateTask("integration_claude", "question");
+          State.appendStep("integration_claude", "Permission · answer in the terminal");
+          State.log({
+            text: result === "late" ? "Permission expired" : "Permission not delivered",
+            detail: "Answer it in the terminal",
+            tone: "alert",
+            icon: LINE.hourglass,
+            color: "#F5A524",
+          });
+        }
+        State.notify();
+        // The card shows the outcome for a moment, then returns to the overview —
+        // the island itself stays open.
         if (this.decisionTimer != null) window.clearTimeout(this.decisionTimer);
         this.decisionTimer = window.setTimeout(() => {
           this.decisionTimer = null;
-          // A newer request may have taken the card in the meantime.
           if (State.view === "approval" && !State.pendingApproval) this.setView(State.defaultView());
-        }, 720);
+        }, result === "delivered" ? 820 : 2600);
+        return result;
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
@@ -183,22 +221,17 @@ export class Island {
         void Bridge.saveSettings(State.settings);
         State.notify();
       },
-      setAutoClose: (s) => {
-        State.settings.autoCloseInterval = s;
-        this.fsm.homeToPetitDelay = s;
-        void Bridge.saveSettings(State.settings);
-        State.notify();
-      },
+      hide: () => this.hide(),
       openSettingsWindow: () => void Bridge.openSettingsWindow(),
       blip: () => Sound.play("blip"),
     };
 
     this.wakeStrip = h("div", { id: "wake-strip" });
-    this.botGlow = h("div", { id: "bot-glow" });
+    this.ring = h("div", { id: "island-ring" });
+    this.scan = h("div", { id: "island-scan", class: "fx-scan" });
     this.botCanvas = h("canvas", { id: "bot-canvas" });
     this.greetingCanvas = h("canvas", { id: "greeting-canvas" });
     this.miniGrid = h("div", { id: "mini-grid" });
-    this.countdown = h("div", { id: "countdown" });
     // Concave fillets that tie the island to the top edge of the screen.
     this.shoulderL = h("div", { class: "shoulder l" });
     this.shoulderR = h("div", { class: "shoulder r" });
@@ -230,13 +263,16 @@ export class Island {
 
     this.clipEl = h(
       "div",
-      { id: "island-clip" },
-      h("div", { id: "island-sheen" }),
+      { id: "island-clip", class: "fx-spotlight" },
+      h("div", { id: "island-sheen", class: "fx-scanlines" }),
+      // Cursor light, under the glass cards so it shows through them.
+      h("div", { class: "fx-spot" }),
       this.greetingCanvas,
       this.uploadCanvas.el,
       this.contentEl,
       this.compactStatus,
       h("div", { id: "island-edge" }, h("i")),
+      this.scan,
     );
     this.islandEl = h(
       "div",
@@ -245,11 +281,10 @@ export class Island {
       this.shoulderL,
       this.shoulderR,
       this.clipEl,
-      h("div", { id: "island-ring" }),
-      this.botGlow,
+      this.ring,
+      this.core.el,
       this.botCanvas,
       this.miniGrid,
-      this.countdown,
     );
 
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -265,7 +300,6 @@ export class Island {
   // ── FSM ─────────────────────────────────────────────────────────────────────
 
   private wireFsm() {
-    this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     this.fsm.onTransition = (from, to) => {
       switch (to) {
         case "hidden":
@@ -276,11 +310,12 @@ export class Island {
           else if (from === "hidden") Sound.play("peek");
           this.setMode("compact");
           if (from === "coucou") State.view = State.defaultView();
-          if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
         case "home":
+          // Coming out of the greeting the greeting canvas has finished; any
+          // other way in opens on the default view.
+          if (from === "coucou") this.greeting.interrupt();
           this.expand(State.defaultView());
-          if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
         case "coucou":
           this.expand("greeting");
@@ -352,7 +387,6 @@ export class Island {
     if (State.mode !== "expanded") this.setMode("expanded");
     else this.animateGeometry(false);
     State.lastActivity = performance.now();
-    this.homeCollapseAt = null;
     State.notify();
   }
 
@@ -372,6 +406,37 @@ export class Island {
     State.lastActivity = performance.now();
     this.animateGeometry(!grew);
     State.notify();
+  }
+
+  /** First launch, or "Replay introduction" in Settings. */
+  showWelcome() {
+    this.fsm.forceHome();
+    this.expand("welcome");
+  }
+
+  /** A file (a screenshot from Settings) to ask Claude about. */
+  attachFile(name: string, path: string) {
+    State.droppedFile = { name, path };
+    State.promptContext = { kind: "file", name, path };
+    State.chatHistory = [];
+    void Bridge.chatReset();
+    Sound.play("attach");
+    this.fsm.forceHome();
+    this.expand("prompt");
+  }
+
+  /** Explicit hide: the island retracts into the top edge until the pointer wakes it. */
+  hide() {
+    State.isPinned = false;
+    this.fsm.pinned = false;
+    // Screen access is never allowed to become invisible: while it is on the
+    // island only goes as far as compact, where it keeps saying so.
+    if (State.screen.active) {
+      this.fsm.forcePetit();
+      State.showFlash("Screen access is on — stop it to hide Coucou", "#F4505E", "error", 4000);
+      return;
+    }
+    this.fsm.forceHidden();
   }
 
   collapse() {
@@ -546,7 +611,11 @@ export class Island {
     this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
     this.islandEl.style.transform = `translateX(-50%)`;
     // The fillets grow with the corner radius, and vanish as the island retracts.
-    const sh = Math.max(0, Math.min(r * 0.62, hh * 0.9));
+    // Liquid neck: while the island pours out of the edge the fillets swell
+    // with its speed, then settle back as it comes to rest.
+    const speed = Math.abs(hh - this.prevHeight);
+    this.prevHeight = hh;
+    const sh = Math.max(0, Math.min(r * 0.62 + Math.min(9, speed * 0.9), hh * 0.9));
     const shPx = `${sh.toFixed(2)}px`;
     for (const el of [this.shoulderL, this.shoulderR]) {
       el.style.width = shPx;
@@ -663,13 +732,16 @@ export class Island {
     if (inIsland && !this.wasInIsland) {
       if (this.fsm.state === "coucou") this.greeting.hover();
       this.fsm.mouseEntered();
-      this.homeCollapseAt = null;
     }
-    if (!inIsland && this.wasInIsland) {
-      this.fsm.mouseLeft();
-      if (this.fsm.state === "home" && !State.isPinned) {
-        this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
-      }
+    // Leaving the island is not a request to close it: nothing happens.
+
+    // Parallax: layers behind the glass lean toward the pointer.
+    const px = inIsland && State.mode === "expanded" ? clamp((x - rect.x) / rect.w * 2 - 1, -1, 1) : 0;
+    const py = inIsland && State.mode === "expanded" ? clamp((y - rect.y) / Math.max(1, rect.h) * 2 - 1, -1, 1) : 0;
+    if (Math.abs(px - this.parallax.x) > 0.02 || Math.abs(py - this.parallax.y) > 0.02) {
+      this.parallax = { x: px, y: py };
+      this.islandEl.style.setProperty("--px", px.toFixed(3));
+      this.islandEl.style.setProperty("--py", py.toFixed(3));
     }
     this.wasInIsland = inIsland;
 
@@ -794,7 +866,6 @@ export class Island {
     tickMiniBots(dt);
     this.views.get(State.view)?.tick?.(nowMs);
     if (UploadSeq.isActive) this.stepSequence();
-    this.updateCountdown(nowMs);
 
     // Nothing is drawn while the island is hidden, so nothing may keep the loop
     // alive either. This used to read `... || this.engine.busy || State.mode !==
@@ -829,19 +900,11 @@ export class Island {
     const visible = p.opacity > 0 && !greetingActive && !this.uploadActive;
     this.botCanvas.style.opacity = visible ? "1" : "0";
 
-    if (State.mode === "expanded" && State.view !== "uploading" && !greetingActive && !this.uploadActive) {
-      const d = p.diameter;
-      const color = botGlowColor(State.effectiveState);
-      this.botGlow.style.display = "block";
-      this.botGlow.style.width = `${d * 2.2}px`;
-      this.botGlow.style.height = `${d * 2.2}px`;
-      this.botGlow.style.left = `${this.botCx.value - d * 1.1}px`;
-      this.botGlow.style.top = `${this.botCy.value - d * 1.1}px`;
-      this.botGlow.style.background = `radial-gradient(circle, ${color} 0%, transparent 62%)`;
-      this.botGlow.style.opacity = String(botGlowOpacity(State.effectiveState));
-    } else {
-      this.botGlow.style.display = "none";
-    }
+    const coreOn =
+      State.mode === "expanded" && State.view !== "uploading" && !greetingActive && !this.uploadActive && p.diameter > 0 &&
+      // These two draw their own: the onboarding core and the activity panel.
+      State.view !== "welcome" && State.view !== "center";
+    this.core.place(this.botCx.value, this.botCy.value, p.diameter, coreOn, this.parallax.x, this.parallax.y);
   }
 
   private drawBot(dt: number) {
@@ -891,18 +954,6 @@ export class Island {
 
   private lookY(): number {
     return -Math.tanh((State.mouse.y - this.botCy.value) / 200);
-  }
-
-  private updateCountdown(nowMs: number) {
-    if (State.mode !== "expanded" || State.isPinned || this.homeCollapseAt == null) {
-      this.countdown.style.width = "0px";
-      return;
-    }
-    const autoClose = State.settings.autoCloseInterval;
-    const windowS = Math.min(10, autoClose * 0.6);
-    const remaining = (this.homeCollapseAt - nowMs) / 1000;
-    this.countdown.style.width =
-      remaining < windowS ? `${Math.max(0, clamp(remaining / windowS, 0, 1) * 160)}px` : "0px";
   }
 
   // ── DOM sync ────────────────────────────────────────────────────────────────
@@ -978,10 +1029,29 @@ export class Island {
     if (this.islandEl.dataset.tone !== tone) this.islandEl.dataset.tone = tone;
     this.islandEl.style.setProperty("--accent", color);
 
+    const coreKind: CoreKind = override === "thinking" ? "chat" : override === "dizzy" ? "idle" : phase?.kind ?? "idle";
+    this.core.setPhase(coreKind, tone, color);
+    // The rim turns to aurora only while something waits on the user.
+    this.ring.classList.toggle("fx-aurora", tone === "alert");
+    // A new kind of state sweeps a scan line across the island, once.
+    if (tone !== this.lastTone) {
+      this.lastTone = tone;
+      if (tone !== "idle" && State.mode === "expanded") {
+        this.scan.classList.remove("run");
+        void this.scan.offsetWidth;
+        this.scan.classList.add("run");
+      }
+    }
+
     let line: string | null = null;
     let path: string = LINE.sparkle;
     let lineColor = color;
-    if (phase) {
+    this.islandEl.classList.toggle("screen-on", State.screen.active);
+    if (State.screen.active) {
+      line = "SCREEN ACCESS ACTIVE";
+      path = LINE.screen;
+      lineColor = "#F4505E";
+    } else if (phase) {
       line = phase.detail && phase.tone !== "alert" ? `${phase.label} · ${phase.detail}` : phase.label;
       path = phase.icon;
     } else if (State.flash) {
@@ -1007,7 +1077,6 @@ export class Island {
   applySettings() {
     Sound.setEnabled(State.settings.soundEnabled);
     Sound.setVolume(State.settings.soundVolume);
-    this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     State.notify();
   }
 

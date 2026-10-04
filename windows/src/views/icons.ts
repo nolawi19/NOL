@@ -73,6 +73,13 @@ export const LINE = {
   external: "M14 4h6v6M20 4l-8.5 8.5M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
   refresh: "M19.5 9A8 8 0 0 0 5.2 7.2L4 8.5M4 4v4.5h4.5M4.5 15a8 8 0 0 0 14.3 1.8l1.2-1.3M20 20v-4.5h-4.5",
   chevronDown: "M6 9.5l6 6 6-6",
+  chevronUp: "M6 14.5l6-6 6 6",
+  /** Retract into the top edge. */
+  retract: "M12 20V9.5M7.5 14 12 9.5l4.5 4.5M5 4.5h14",
+  grid: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
+  phone: "M8 2.5h8a1.5 1.5 0 0 1 1.5 1.5v16a1.5 1.5 0 0 1-1.5 1.5H8A1.5 1.5 0 0 1 6.5 20V4A1.5 1.5 0 0 1 8 2.5zM10.5 18.5h3",
+  screen: "M3.5 4.5h17v11.5h-17zM8.5 20h7M12 16v4M9 10.2l2 2 4-4",
+  activity: "M3 12h4l2.5-6.5 5 13L17 12h4",
   chevronRight: "M9.5 6l6 6-6 6",
   arrowLeft: "M19 12H5M11 6l-6 6 6 6",
   upload: "M12 15.5V4M7 8.5 12 3.5l5 5M4.5 15v4.5h15V15",

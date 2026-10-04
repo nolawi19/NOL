@@ -44,12 +44,31 @@ installs for the current user only — no admin prompt.
 | Click Mochi | It gets annoyed. Three times in a row and it goes dizzy |
 | Rest the pointer on Mochi for two seconds | Hearts |
 | Drag a file onto the island | Mochi turns into a box, swallows it, then offers to answer questions about it |
-| `Esc` | Closes the island |
+| `Esc`, or the ⌃ button | Collapses the island to compact |
+| The ⤒ button, or tray → Hide island | Retracts it into the top edge |
 | Tray icon | Open, Settings…, Pause, Quit |
 
 Everything else happens on its own: a Claude Code permission request opens the
 island with **Deny / Allow**, a finished session shows what it did, and
 your integrations sit in the coloured pills next to Mochi.
+
+**Coucou never closes itself.** There is no auto-close: the island stays as you
+left it — open, compact or hidden — until you change it. Things that need you
+(a permission request, a finished session) may open it; nothing makes it smaller
+except you.
+
+The first launch opens on a short introduction and a setup checklist (Claude
+Code hooks, Anthropic key); it comes back until you finish it, and Settings →
+About → Replay shows it again. The ⊞ tab is the command center: live activity,
+requests, screen access, this computer and devices.
+
+Settings → Screen can share a screen or window with Coucou — only after a
+confirmation and the system picker, with SCREEN ACCESS ACTIVE and Stop in the
+island for as long as it lasts — and attach one still to the chat. Settings →
+Devices and → Permissions show this computer's identity and everything Coucou
+can or might do, with what each depends on: see
+[`docs/CAPABILITIES.md`](../docs/CAPABILITIES.md) and
+[`docs/DEVICES.md`](../docs/DEVICES.md).
 
 ## Claude Code
 
