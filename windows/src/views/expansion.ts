@@ -11,6 +11,7 @@ import { State, type TimelineCat, type TimelineEntry } from "../core/state";
 import { Bridge, IS_TAURI, sendTo } from "../core/bridge";
 import { Insight } from "../core/insight";
 import { MODES, MODE_ORDER } from "../core/prefs";
+import { formatStyleNumber, numberOfStyle, randomStyleNumber, STYLE_COUNT, styleFromNumber, themeInfo } from "../core/styles";
 import { Session, WORK_MODE_LABEL, localSummary } from "../core/session";
 import { button, card, icon, setIcon } from "./ui";
 import type { ViewActions, ViewHost } from "./views";
@@ -66,9 +67,15 @@ export function fuzzyScore(query: string, text: string): number {
   return score >= q.length * 3 ? score : 0;
 }
 
-function paletteCommands(actions: ViewActions): PaletteCommand[] {
+function paletteCommands(actions: ViewActions, query = ""): PaletteCommand[] {
   const list: PaletteCommand[] = [];
   const add = (c: PaletteCommand) => list.push(c);
+  // "#123456" (or just the digits) jumps straight to that style.
+  const jump = /^#?(\d{1,6})$/.exec(query.trim());
+  if (jump) {
+    const n = Number(jump[1]);
+    add({ id: "style-jump", title: `Style ${formatStyleNumber(n)}`, group: "Style", icon: LINE.sparkle, keywords: query, hint: themeInfo(styleFromNumber(n).theme).name, run: () => actions.setStyle(n) });
+  }
   const claude = State.tasks.find((t) => t.id === "integration_claude");
   const session = claude && (claude.state !== "idle" || claude.steps.length > 0);
 
@@ -98,6 +105,15 @@ function paletteCommands(actions: ViewActions): PaletteCommand[] {
     if (m === State.prefs.mode) continue;
     add({ id: `mode-${m}`, title: `${MODES[m].title} mode`, group: "Mode", icon: m === "night" ? LINE.moon : m === "silent" ? ICONS.speakerOff : m === "focus" ? LINE.eyeOff : m === "presentation" ? LINE.screen : LINE.sparkle, keywords: "mode dnd do not disturb quiet", hint: MODES[m].desc.split(".")[0], run: () => actions.setMode(m) });
   }
+  {
+    const spec = State.prefs.style.spec;
+    const num = spec ? numberOfStyle(spec) : null;
+    add({ id: "style-random", title: "Random style", group: "Style", icon: LINE.sparkle, keywords: "theme colors look shuffle surprise", hint: `${STYLE_COUNT.toLocaleString()} styles`, run: () => actions.setStyle(randomStyleNumber()) });
+    if (num != null) {
+      add({ id: "style-next", title: "Next style", group: "Style", icon: LINE.chevronRight, keywords: "theme", hint: formatStyleNumber((num + 1) % STYLE_COUNT), run: () => actions.setStyle((num + 1) % STYLE_COUNT) });
+    }
+    if (spec) add({ id: "style-default", title: "Coucou's own style", group: "Style", icon: LINE.refresh, keywords: "theme reset default", run: () => actions.setStyle(null) });
+  }
   add({ id: "sound", title: State.settings.soundEnabled ? "Mute sounds" : "Unmute sounds", group: "Island", icon: State.settings.soundEnabled ? ICONS.speakerOff : ICONS.speakerOn, keywords: "audio volume", run: () => actions.toggleSound() });
   add({ id: "collapse", title: "Collapse the island", group: "Island", icon: LINE.chevronUp, keywords: "close small minimise", run: () => actions.collapse() });
   add({ id: "hide", title: "Hide the island", group: "Island", icon: LINE.retract, keywords: "close away", run: () => actions.hide() });
@@ -121,6 +137,7 @@ function paletteCommands(actions: ViewActions): PaletteCommand[] {
     ["integrations", "Integrations", LINE.plug, "vercel github stripe n8n"],
     ["modes", "Modes", LINE.moon, "focus silent presentation night"],
     ["appearance", "Appearance", LINE.sparkle, "glass glow particles motion core"],
+    ["styles", "Styles", LINE.sparkle, "theme themes palette colors look"],
     ["sound", "Sounds", LINE.speaker, "audio events volume"],
     ["automations", "Automations", LINE.bolt, "rules triggers webhook"],
     ["memory", "Memory", LINE.folder, "notes summaries"],
@@ -160,7 +177,7 @@ export function buildPalette(actions: ViewActions): ViewHost {
 
   function render() {
     const q = input.value.trim();
-    const scored = paletteCommands(actions)
+    const scored = paletteCommands(actions, q)
       .map((c) => ({ c, s: Math.max(fuzzyScore(q, c.title) * 1.5, fuzzyScore(q, `${c.group} ${c.keywords ?? ""}`)) }))
       .filter((x) => x.s > 0);
     if (q) scored.sort((a, b) => b.s - a.s);

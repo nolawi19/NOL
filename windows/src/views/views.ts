@@ -44,6 +44,8 @@ export interface ViewActions {
   relayout(): void;
   blip(): void;
   setMode(mode: Mode): void;
+  /** A numbered style (Settings → Styles), or null for Coucou's own look. */
+  setStyle(n: number | null): void;
   /** Asks Claude for a summary of the session and shows it in the insight view. */
   summarizeSession(): void;
   /** Asks Claude what the pending permission request would do. */

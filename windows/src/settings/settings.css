@@ -2184,3 +2184,154 @@ code.block {
 .side .nav-list {
   flex-shrink: 1;
 }
+
+/* Styles: selection and focus follow the chosen accent. */
+:root[data-styled] {
+  --focus-ring: 0 0 0 2px var(--bg-1), 0 0 0 3.5px var(--accent-ui);
+}
+
+:root[data-styled] body {
+  background: var(--bg-1);
+}
+
+:root[data-styled] .nav-indicator::before {
+  background: var(--accent-ui);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent-ui) 70%, transparent);
+}
+
+:root[data-styled] .choice.on {
+  border-color: color-mix(in srgb, var(--accent-ui) 60%, transparent);
+  background: color-mix(in srgb, var(--accent-ui) 9%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-ui) 12%, transparent);
+}
+
+:root[data-styled] .choice.on .radio {
+  border-color: var(--accent-ui);
+  background: var(--accent-ui);
+}
+
+/* Styles page */
+.style-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.style-strip {
+  display: grid;
+  grid-template-columns: repeat(16, 1fr);
+  height: 26px;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}
+
+.style-strip i {
+  display: block;
+}
+
+.style-id {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.style-id b {
+  font: var(--fw-bold) var(--fs-2xl) var(--mono);
+  letter-spacing: 0.02em;
+}
+
+.style-id span {
+  color: var(--ink-3);
+  font-size: var(--fs-sm);
+}
+
+.style-go {
+  width: 120px;
+}
+
+.style-axes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.style-axes label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--ink-3);
+  font-size: var(--fs-sm);
+}
+
+.theme-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 2px;
+  margin-top: 10px;
+}
+
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 11px;
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, 0.018);
+  color: var(--ink-1);
+  text-align: left;
+}
+
+.theme-card:hover {
+  border-color: var(--line-3);
+}
+
+.theme-card.on {
+  border-color: var(--accent-ui, #7aaaff);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-ui, #7aaaff) 25%, transparent);
+}
+
+.theme-card b {
+  font: var(--fw-semibold) var(--fs-sm) var(--font);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.theme-card span {
+  color: var(--ink-4);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.theme-card .style-strip {
+  height: 12px;
+  border-radius: 4px;
+  grid-template-columns: repeat(8, 1fr);
+}
+
+.fav-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 4px 0 10px;
+  border-radius: 14px;
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--ink-2);
+  font: var(--fw-medium) var(--fs-sm) var(--mono);
+}

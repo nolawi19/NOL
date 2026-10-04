@@ -71,7 +71,9 @@ running right now, the project and branch, and this computer's CPU, memory and
 battery; the timeline keeps the last 200 events with filters and search. Modes
 (Focus, Silent, Presentation, Night), appearance, per-event sounds,
 automations (flash, sound, webhook to ntfy / Discord / Slack, Claude summary)
-and an opt-in memory live in Settings. The full map of what works and what
+and an opt-in memory live in Settings. Settings → Styles has a million
+numbered looks (#000000–#999999) built from 253 open-source palettes — or
+press Ctrl+K and type "Random style". The full map of what works and what
 each feature waits on is [`docs/FEATURES.md`](../docs/FEATURES.md).
 
 Settings → Screen can share a screen or window with Coucou — only after a

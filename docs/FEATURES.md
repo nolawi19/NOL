@@ -227,7 +227,11 @@ working when every gate is satisfied at runtime.
 | Core style: orbit, pulse, minimal | ✅ | F | |
 | Dormancy delay | ✅ | — | |
 | Startup check on/off | ✅ | U | |
-| Themes beyond dark | 🧪 | U | the island is designed for the dark top edge |
+| 1,000,000 numbered styles (2,950,992 combinations) | ✅ | U | `core/styles.ts`, Settings → Styles; 253 base16 palettes × 7 axes |
+| Style search, random, next / previous, go to #, favourites | ✅ | U | Settings → Styles, command palette |
+| Readability guarantee for every style | ✅ | U | text ≥ 7:1, status colours ≥ 3:1, checked over every palette and option |
+| Light themes | ⛔ | U | the island is designed to melt into the dark top edge; light palettes are left out |
+| Downloaded web fonts | ⛔ | N | no network calls to services you didn't configure; styles use installed fonts |
 | Automatic mode by schedule / full-screen app | 🖥 🧪 | C | full-screen detection is OS-specific |
 
 ## 12. Sound

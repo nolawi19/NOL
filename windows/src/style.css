@@ -3936,9 +3936,9 @@ button.tile:active {
   font: var(--fw-semibold) var(--fs-3xs) var(--font);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: #c4b5fd;
-  background: rgba(167, 139, 250, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.28);
+  color: color-mix(in srgb, var(--accent-ui, #a78bfa) 60%, #fff);
+  background: color-mix(in srgb, var(--accent-ui, #a78bfa) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-ui, #a78bfa) 28%, transparent);
   white-space: nowrap;
 }
 
@@ -4162,8 +4162,8 @@ button.tile:active {
 
 .pal-row.on {
   color: var(--ink-1);
-  background: linear-gradient(90deg, rgba(167, 139, 250, 0.16), rgba(255, 255, 255, 0.03));
-  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.22);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-ui, #a78bfa) 16%, transparent), rgba(255, 255, 255, 0.03));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-ui, #a78bfa) 22%, transparent);
 }
 
 .pal-icon {
@@ -4178,7 +4178,7 @@ button.tile:active {
 }
 
 .pal-row.on .pal-icon {
-  color: #c4b5fd;
+  color: color-mix(in srgb, var(--accent-ui, #a78bfa) 60%, #fff);
 }
 
 .pal-title {
@@ -4259,8 +4259,8 @@ button.tile:active {
 .tlv-group-btn.on,
 .tlv-chip.on {
   color: var(--ink-1);
-  background: rgba(167, 139, 250, 0.16);
-  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.32);
+  background: color-mix(in srgb, var(--accent-ui, #a78bfa) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-ui, #a78bfa) 32%, transparent);
 }
 
 .tlv-chips {
@@ -4325,7 +4325,7 @@ button.tile:active {
 .ins-shimmer i {
   height: 9px;
   border-radius: 5px;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04), rgba(167, 139, 250, 0.22), rgba(255, 255, 255, 0.04));
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04), color-mix(in srgb, var(--accent-ui, #a78bfa) 22%, transparent), rgba(255, 255, 255, 0.04));
   background-size: 200% 100%;
   animation: ins-shimmer 1.4s linear infinite;
 }
@@ -4574,3 +4574,73 @@ button.tile:active {
 
 .cc-tiles > :nth-child(7) { animation-delay: 260ms; }
 .cc-tiles > :nth-child(8) { animation-delay: 290ms; }
+
+/* ── Styles (Settings → Styles) ─────────────────────────────────────────
+   Only present while a style is chosen ([data-styled] on the root); with
+   none, nothing below applies and Coucou keeps its own look. */
+
+#island-pattern {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  display: none;
+}
+
+:root[data-styled] #island-pattern {
+  display: block;
+}
+
+:root[data-pattern="scanlines"] #island-pattern {
+  background: repeating-linear-gradient(0deg, color-mix(in srgb, var(--accent-ui) 9%, transparent) 0 1px, transparent 1px 3px);
+}
+
+:root[data-pattern="grid"] #island-pattern {
+  background:
+    linear-gradient(color-mix(in srgb, var(--accent-ui) 8%, transparent) 1px, transparent 1px) 0 0 / 18px 18px,
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-ui) 8%, transparent) 1px, transparent 1px) 0 0 / 18px 18px;
+}
+
+:root[data-pattern="dots"] #island-pattern {
+  background: radial-gradient(color-mix(in srgb, var(--accent-ui) 18%, transparent) 1px, transparent 1.4px) 0 0 / 12px 12px;
+}
+
+:root[data-pattern="diagonal"] #island-pattern {
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--accent-ui) 7%, transparent) 0 1px, transparent 1px 9px);
+}
+
+:root[data-pattern="mesh"] #island-pattern {
+  background:
+    radial-gradient(60% 90% at 12% 0%, color-mix(in srgb, var(--accent-ui) 16%, transparent), transparent 70%),
+    radial-gradient(50% 80% at 92% 100%, color-mix(in srgb, var(--c-think) 13%, transparent), transparent 70%);
+}
+
+:root[data-edge="hairline"] #island-pattern {
+  box-shadow: inset 0 0 0 1px var(--line-3);
+}
+
+:root[data-edge="accent"] #island-pattern {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent-ui) 55%, transparent),
+    inset 0 -10px 18px -14px var(--accent-ui);
+}
+
+:root[data-styled] .tab-indicator {
+  box-shadow: var(--highlight), inset 0 0 0 1px color-mix(in srgb, var(--accent-ui) 35%, transparent);
+}
+
+:root[data-styled] .fx-gradient-text {
+  background-image: linear-gradient(100deg, var(--ink-1), var(--accent-ui));
+}
+
+/* Wider fonts (Styles → Font → Mono / Serif) must not wrap the center's labels. */
+:root[data-styled] .cc-title,
+:root[data-styled] .cc-phase {
+  white-space: nowrap;
+}
+
+:root[data-styled] .cc-phase {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

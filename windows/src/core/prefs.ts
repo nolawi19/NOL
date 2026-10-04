@@ -11,6 +11,7 @@
 
 import type { SoundName } from "./sound";
 import type { Settings } from "./state";
+import { applyStyle, STYLE_SPACE, validSpec, type StyleSpec } from "./styles";
 
 // ── Modes ─────────────────────────────────────────────────────────────────────
 
@@ -203,6 +204,11 @@ export interface Prefs {
     useInChat: boolean;
   };
   startup: { cinematic: boolean };
+  /**
+   * The chosen style (core/styles.ts), or null for Coucou's own look.
+   * Favourites are indices in the full style space.
+   */
+  style: { spec: StyleSpec | null; favorites: number[] };
   /** Seconds of quiet before the energy core goes dormant. */
   dormantAfter: number;
 }
@@ -219,6 +225,7 @@ export const DEFAULT_PREFS: Prefs = {
   webhooks: WEBHOOK_SLOTS.map((slot, i) => ({ slot, label: `Webhook ${i + 1}`, kind: "ntfy" as const })),
   memory: { enabled: false, useInChat: false },
   startup: { cinematic: true },
+  style: { spec: null, favorites: [] },
   dormantAfter: 120,
 };
 
@@ -270,6 +277,7 @@ export function readPrefs(raw: unknown): Prefs {
   const s = isObj(raw.sounds) ? raw.sounds : {};
   const m = isObj(raw.memory) ? raw.memory : {};
   const st = isObj(raw.startup) ? raw.startup : {};
+  const sty = isObj(raw.style) ? raw.style : {};
   const hooks = Array.isArray(raw.webhooks) ? raw.webhooks : [];
   return {
     v: 1,
@@ -295,6 +303,12 @@ export function readPrefs(raw: unknown): Prefs {
     }),
     memory: { enabled: bool(m.enabled, false), useInChat: bool(m.useInChat, false) },
     startup: { cinematic: bool(st.cinematic, true) },
+    style: {
+      spec: validSpec(sty.spec),
+      favorites: Array.isArray(sty.favorites)
+        ? [...new Set(sty.favorites.filter((x): x is number => Number.isInteger(x) && (x as number) >= 0 && (x as number) < STYLE_SPACE))].slice(0, 100)
+        : [],
+    },
     dormantAfter: num(raw.dormantAfter, 30, 3600, d.dormantAfter),
   };
 }
@@ -316,6 +330,7 @@ export function soundAllowed(prefs: Prefs, name: string): boolean {
  * so it costs nothing per frame. Used by both windows.
  */
 export function applyAppearance(prefs: Prefs, doc: Document = document) {
+  applyStyle(prefs.style.spec, doc);
   const root = doc.documentElement;
   const night = prefs.mode === "night";
   root.style.setProperty("--pref-glass", String(prefs.appearance.glass));

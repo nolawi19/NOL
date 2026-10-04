@@ -20,6 +20,14 @@ import {
   type ActionSpec, type AutomationRule, type CoreStyle, type MotionPref, type Prefs, type TriggerId, type WebhookSlot,
 } from "../core/prefs";
 import { Memory, type MemoryItem } from "../core/memory";
+import {
+  AXES, describeStyle, formatStyleNumber, numberOfStyle, paletteOf, randomStyleNumber, searchThemes, specFromIndex,
+  specIndex, STYLE_COUNT, STYLE_SPACE, styleFromNumber, themeInfo, type StyleSpec,
+} from "../core/styles";
+import { THEMES } from "../design/themes.generated";
+
+const THEME_COUNT = THEMES.length;
+const AUTHOR_COUNT = new Set(THEMES.map((t) => t[2])).size;
 import type { SoundName } from "../core/sound";
 import { h, clear, svg } from "../views/dom";
 import { LINE } from "../views/icons";
@@ -1650,6 +1658,126 @@ function securityCards(): HTMLElement[] {
 }
 
 
+// Styles ─────────────────────────────────────────────────────────────────────
+
+function strip(colors: string[], n = 16): HTMLElement {
+  const order = n === 16 ? colors : [colors[0], colors[1], colors[8], colors[9], colors[10], colors[11], colors[13], colors[14]];
+  return h("div", { class: "style-strip" }, ...order.map((c) => h("i", { style: `background:${c}` })));
+}
+
+function stylesPage(): HTMLElement[] {
+  const spec = prefs.style.spec;
+  const num = spec ? numberOfStyle(spec) : null;
+  const setSpec = (next: StyleSpec | null) => {
+    savePrefs((p) => (p.style.spec = next), true);
+    renderPage(false);
+  };
+  const go = (n: number) => setSpec(styleFromNumber(((n % STYLE_COUNT) + STYLE_COUNT) % STYLE_COUNT));
+
+  // Current
+  const idText = spec ? (num != null ? formatStyleNumber(num) : "Custom") : "Coucou";
+  const goInput = h("input", { class: "text-input style-go", type: "text", inputmode: "numeric", placeholder: "#000000", "aria-label": "Go to style number" }) as HTMLInputElement;
+  goInput.addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key !== "Enter") return;
+    const n = Number(goInput.value.replace(/[#\s]/g, ""));
+    if (Number.isInteger(n) && n >= 0 && n < STYLE_COUNT) go(n);
+    else goInput.classList.add("invalid");
+  });
+  const favIdx = spec ? specIndex(spec) : null;
+  const isFav = favIdx != null && prefs.style.favorites.includes(favIdx);
+  const hero = h(
+    "div",
+    { class: "style-hero" },
+    h("div", { class: "style-id" }, h("b", { text: idText }), h("span", { text: spec ? describeStyle(spec) : "Coucou's own look — no style applied." })),
+    strip(spec ? paletteOf(spec.theme) : ["#000000", "#08090b", "#131418", "#1a1b20", "#6d727b", "#d6d9de", "#f5f6f8", "#ffffff", "#f4505e", "#f59e0b", "#f5a524", "#34d399", "#22d3ee", "#3b9eff", "#a78bfa", "#f472b6"]),
+    h(
+      "div",
+      { class: "actions" },
+      btn("Random style", "primary", () => go(randomStyleNumber()), LINE.sparkle),
+      btn("Previous", "secondary", () => go((num ?? 0) - 1), LINE.arrowLeft),
+      btn("Next", "secondary", () => go((num ?? -1) + 1), LINE.chevronRight),
+      goInput,
+      spec
+        ? btn(isFav ? "Saved" : "Save to favourites", "ghost", () => {
+          if (favIdx == null || isFav) return;
+          savePrefs((p) => p.style.favorites.unshift(favIdx));
+          renderPage(false);
+        }, LINE.check)
+        : null,
+      spec ? btn("Coucou default", "ghost", () => setSpec(null), LINE.refresh) : null,
+    ),
+  );
+
+  // Builder
+  const base: StyleSpec = spec ?? { theme: 0, accent: 6, depth: 0, font: 0, pattern: 0, edge: 1, saturation: 1, contrast: 1 };
+  const axes = h(
+    "div",
+    { class: "style-axes" },
+    ...AXES.filter((a) => a.id !== "theme").map((a) =>
+      h(
+        "label",
+        {},
+        h("span", { text: a.title }),
+        select(String(base[a.id]), a.options.map((o, i) => [String(i), o] as [string, string]), a.title, (v) => setSpec({ ...base, [a.id]: Number(v) })),
+      ),
+    ),
+  );
+
+  const search = h("input", { class: "text-input", type: "search", placeholder: `Search ${THEME_COUNT} palettes by name or author`, "aria-label": "Search palettes" }) as HTMLInputElement;
+  const list = h("div", { class: "theme-list" });
+  const drawList = () => {
+    clear(list);
+    for (const i of searchThemes(search.value)) {
+      const t = themeInfo(i);
+      const b = h(
+        "button",
+        { class: spec?.theme === i ? "theme-card on" : "theme-card", type: "button", title: `${t.name} — ${t.author}` },
+        strip(t.colors, 8),
+        h("b", { text: t.name }),
+        h("span", { text: t.author || "—" }),
+      );
+      b.addEventListener("click", () => setSpec({ ...base, theme: i }));
+      list.append(b);
+    }
+    if (!list.childElementCount) list.append(h("p", { class: "muted", text: "No palette matches." }));
+  };
+  search.addEventListener("input", drawList);
+  drawList();
+
+  const favs = h("div", { class: "fav-list" });
+  if (prefs.style.favorites.length === 0) favs.append(h("span", { class: "muted", text: "Styles you save appear here." }));
+  for (const idx of prefs.style.favorites) {
+    const s = specFromIndex(idx);
+    const n = numberOfStyle(s);
+    const chip = h("span", { class: "fav", title: describeStyle(s) }, h("span", { text: n != null ? formatStyleNumber(n) : themeInfo(s.theme).name }));
+    const use = btn("", "ghost", () => setSpec(s), LINE.check);
+    use.title = "Use this style";
+    const del = btn("", "ghost", () => {
+      savePrefs((p) => (p.style.favorites = p.style.favorites.filter((x) => x !== idx)));
+      renderPage(false);
+    }, LINE.x);
+    del.title = "Remove from favourites";
+    chip.append(use, del);
+    favs.append(chip);
+  }
+
+  return [
+    card(
+      "Your style",
+      `${STYLE_COUNT.toLocaleString()} numbered styles, #000000 to #999999 — ${STYLE_SPACE.toLocaleString()} combinations in all. Applied instantly to the island and this window; status colours are always kept readable.`,
+      hero,
+    ),
+    card("Fine-tune", "Every option changes something you can see. The palette is chosen below.", axes),
+    card("Palettes", `${THEME_COUNT} dark palettes researched from the base16 theme collection — by ${AUTHOR_COUNT} different authors.`, search, list),
+    card("Favourites", null, favs),
+    card(
+      "Credits",
+      null,
+      h("p", { class: "muted", text: "Palettes from tinted-theming/schemes (base16), MIT License, © 2022 Tinted Theming and each palette's author. Fonts are ones already installed on your system; nothing is downloaded." }),
+    ),
+  ];
+}
+
 const PAGES: Page[] = [
   { id: "claude-code", group: "Connect", title: "Claude Code", subtitle: "Watch sessions and answer permission requests from the island.", icon: LINE.terminal, render: claudeCodePage, status: () => hookStatus.installed, keywords: "hooks relay settings.json install" },
   { id: "claude", group: "Connect", title: "Claude", subtitle: "Chat with Claude from the island.", icon: LINE.sparkle, render: claudePage, status: () => present["anthropic-api-key"] ?? false, keywords: "api key anthropic model chat" },
@@ -1657,6 +1785,7 @@ const PAGES: Page[] = [
   { id: "general", group: "Experience", title: "General", subtitle: "How the island behaves.", icon: LINE.sliders, render: generalPage, keywords: "collapse hide close island" },
   { id: "modes", group: "Experience", title: "Modes", subtitle: "Focus, silent, presentation, night.", icon: LINE.moon, render: modesPage, status: () => (prefs.mode === "normal" ? null : true), keywords: "do not disturb dnd quiet focus presentation night" },
   { id: "appearance", group: "Experience", title: "Appearance", subtitle: "Glass, glow, particles, motion and the energy core.", icon: LINE.sparkle, render: appearancePage, keywords: "theme glass glow particles motion core animation startup" },
+  { id: "styles", group: "Experience", title: "Styles", subtitle: "A million looks — palettes, accents, textures, fonts.", icon: LINE.sparkle, render: stylesPage, status: () => (prefs.style.spec ? true : null), keywords: "theme themes style colors colours palette skin look nord dracula catppuccin gruvbox tokyo night rose pine solarized monokai font texture random" },
   { id: "sound", group: "Experience", title: "Sound", subtitle: "What Mochi sounds like, and when.", icon: LINE.speaker, render: soundPage, status: () => (settings.soundEnabled ? null : false), keywords: "audio volume mute events" },
   { id: "display", group: "Experience", title: "Display", subtitle: "Which screen the island lives on.", icon: LINE.monitor, render: displayPage, keywords: "monitor screen dpi" },
   { id: "startup", group: "Experience", title: "Startup", subtitle: "When Coucou starts.", icon: LINE.power, render: startupPage, keywords: "autostart login boot" },
@@ -1671,7 +1800,7 @@ const PAGES: Page[] = [
 // ── Shell ─────────────────────────────────────────────────────────────────────
 
 /** Pages made only of preferences, safe to redraw when the island changes one. */
-const REDRAW_ON_EXTERNAL_CHANGE = new Set(["general", "sound", "display", "startup", "modes", "appearance"]);
+const REDRAW_ON_EXTERNAL_CHANGE = new Set(["general", "sound", "display", "startup", "modes", "appearance", "styles"]);
 
 let current = recall("coucou.settings.page") ?? PAGES[0].id;
 const navButtons = new Map<string, HTMLButtonElement>();

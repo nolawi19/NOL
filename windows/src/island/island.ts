@@ -29,6 +29,7 @@ import { Insight } from "../core/insight";
 import { Memory, scrub } from "../core/memory";
 import { localSummary, Session, summaryPrompt } from "../core/session";
 import { COMMAND_CLASS_LABEL, REVERSIBILITY_LABEL } from "../core/risk";
+import { formatStyleNumber, styleFromNumber, themeInfo } from "../core/styles";
 
 /** Views with a text field: the only times the island takes keyboard focus. */
 const TEXT_VIEWS: ReadonlySet<IslandViewName> = new Set(["prompt", "palette", "timeline"]);
@@ -250,6 +251,13 @@ export class Island {
         State.showFlash(`${MODES[mode].title} mode`, "#A78BFA", "info", 2600, true);
         State.notify();
       },
+      setStyle: (n) => {
+        const spec = n == null ? null : styleFromNumber(n);
+        State.settings.prefs = { ...State.prefs, style: { ...State.prefs.style, spec } };
+        this.applySettings();
+        void Bridge.saveSettings(State.settings);
+        State.showFlash(n == null ? "Coucou's own style" : `Style ${formatStyleNumber(n)} · ${themeInfo(spec!.theme).name}`, "#A78BFA", "info", 3000, true);
+      },
       summarizeSession: () => {
         this.setView("insight");
         void this.summarize().catch(() => {});
@@ -341,6 +349,8 @@ export class Island {
       "div",
       { id: "island-clip", class: "fx-spotlight" },
       h("div", { id: "island-sheen", class: "fx-scanlines" }),
+      // Texture and outline of the chosen style (Settings → Styles); empty otherwise.
+      h("div", { id: "island-pattern" }),
       // Cursor light, under the glass cards so it shows through them.
       h("div", { class: "fx-spot" }),
       this.greetingCanvas,
