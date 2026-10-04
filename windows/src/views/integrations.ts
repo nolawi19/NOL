@@ -51,6 +51,8 @@ const OPEN_URLS: Record<string, string> = {
   integration_stripe: "https://dashboard.stripe.com/payments",
   integration_notion: "https://notion.so",
   integration_calcom: "https://app.cal.com/bookings",
+  integration_sentry: "https://sentry.io",
+  integration_linear: "https://linear.app",
 };
 
 function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
@@ -226,7 +228,50 @@ function githubCard(): HTMLElement {
       statRow(ICONS.star, "#F5A524", "Total stars", fmt(stars)),
       statRow(ICONS.stack, "#6B7079", "Repositories", String(repos)),
     ),
+    ...actionsRow(),
   );
+}
+
+/** GitHub Actions: the latest run of the most recently pushed repos — failures first. */
+function actionsRow(): HTMLElement[] {
+  const runs = arr("integration_github", "runs");
+  if (!runs.length) return [];
+  const failed = runs.filter((r) => r.conclusion && r.conclusion !== "success" && r.conclusion !== "skipped");
+  const r = failed[0] ?? runs[0];
+  const running = !r.conclusion;
+  const ok = r.conclusion === "success";
+  const color = running ? "#3B9EFF" : ok ? "#34D399" : "#F4505E";
+  const label = running ? "running" : ok ? "passed" : String(r.conclusion);
+  return [
+    h(
+      "button",
+      { class: "int-page", title: `${runs.length} recent workflow runs`, onclick: () => typeof r.url === "string" && void Bridge.openUrl(r.url) },
+      dot(color, 6),
+      h("span", { class: "int-name", text: `${r.repo} · ${r.name} ${label}${failed.length > 1 ? ` (+${failed.length - 1} failing)` : ""}` }),
+      h("span", { class: "int-ago", text: timeAgo(r.updatedAt) }),
+    ),
+  ];
+}
+
+/** Issue lists: Sentry, Linear, Jira. */
+function issueCard(id: string, color: string, name: string, kind: string, empty: string): HTMLElement {
+  const rows = h("div", { class: "int-rows tight" });
+  const issues = arr(id, "issues");
+  if (!issues.length) rows.append(h("div", { class: "int-empty", text: empty }));
+  for (const i of issues.slice(0, 3)) {
+    const level = String(i.level ?? "");
+    const accent = level === "fatal" || level === "error" ? "#F4505E" : level === "warning" ? "#F5A524" : i.started ? "#3B9EFF" : "#6B7079";
+    rows.append(
+      h(
+        "button",
+        { class: "int-page", title: String(i.title ?? ""), onclick: () => typeof i.url === "string" && i.url && void Bridge.openUrl(i.url) },
+        dot(accent, 6),
+        h("span", { class: "int-name", text: `${i.key ? `${i.key} · ` : ""}${String(i.title ?? "Untitled")}` }),
+        h("span", { class: "int-ago", text: i.lastSeen ? timeAgo(i.lastSeen) : String(i.state ?? i.count ?? "") }),
+      ),
+    );
+  }
+  return h("div", { class: "int-card" }, header(color, name, kind), rows);
 }
 
 // ── Stripe ────────────────────────────────────────────────────────────────────
@@ -398,6 +443,10 @@ export function hasIntegrationData(id: string): boolean {
       return arr(id, "pages").length > 0;
     case "integration_calcom":
       return info.loaded;
+    case "integration_sentry":
+    case "integration_linear":
+    case "integration_jira":
+      return info.loaded;
     default:
       return false;
   }
@@ -426,6 +475,12 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
       return notionCard();
     case "integration_calcom":
       return calcomCard();
+    case "integration_sentry":
+      return issueCard("integration_sentry", "#A78BFA", "Sentry", "Unresolved · 24 h", "No new issues");
+    case "integration_linear":
+      return issueCard("integration_linear", "#5E6AD2", "Linear", "Assigned to you", "Nothing assigned");
+    case "integration_jira":
+      return issueCard("integration_jira", "#2684FF", "Jira", "Assigned to you", "Nothing assigned");
     default:
       return idleCard(task, hooks.openSettings);
   }

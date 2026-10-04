@@ -15,6 +15,7 @@ import { prefsOf, TRIGGERS, type ActionSpec, type AutomationRule, type TriggerId
 import { Sound } from "./sound";
 import { State } from "./state";
 import { LINE } from "../views/icons";
+import { Guard } from "./guard";
 import type { IslandViewName } from "./layout";
 
 export interface TriggerContext {
@@ -104,7 +105,8 @@ export const Automation = {
 
   /** Runs every matching rule. Never throws; failures go to the timeline. */
   fire(trigger: TriggerId, ctx: TriggerContext) {
-    if (State.paused) return;
+    // Paused, or on hold after the panic button: no automation runs.
+    if (State.paused || Guard.hold) return;
     const rules = prefsOf(State.settings).automations;
     if (rules.length === 0) return;
     const now = Date.now();

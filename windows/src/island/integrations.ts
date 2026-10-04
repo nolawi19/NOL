@@ -6,6 +6,7 @@ import { onEvent, Bridge, type IntegrationUpdate } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { Automation } from "../core/automation";
 import { MODES } from "../core/prefs";
+import { Schedule } from "../core/schedule";
 import { State } from "../core/state";
 import type { Island } from "./island";
 import { LINE } from "../views/icons";
@@ -19,6 +20,9 @@ const KEY_FOR: Record<string, string> = {
   integration_resend: "resend-api-key",
   integration_notion: "notion-api-key",
   integration_calcom: "calcom-api-key",
+  integration_sentry: "sentry-token",
+  integration_linear: "linear-api-key",
+  integration_jira: "jira-token",
 };
 
 const clearTimers = new Map<string, number>();
@@ -53,6 +57,11 @@ function handle(island: Island, update: IntegrationUpdate) {
     loaded: update.error ? (previous?.loaded ?? false) : true,
     configured: previous?.configured ?? true,
   };
+  // A heads-up ten minutes before the next Cal.com booking.
+  if (update.id === "integration_calcom" && !update.error) {
+    const bookings = (update.data as { bookings?: { title: string; start: string }[] }).bookings ?? [];
+    Schedule.bookings(bookings);
+  }
 
   const event = update.event;
   if (event) {

@@ -321,7 +321,7 @@ async fn docker_containers() -> Result<Vec<desktop::Container>, String> {
 /// One spoken sentence → text (push-to-talk). Windows speech recognition only.
 #[tauri::command]
 async fn dictate() -> Result<String, String> {
-    log::line("dictation started (user held the talk button)".to_string());
+    log::line("dictation started (the user clicked the talk button)");
     tauri::async_runtime::spawn_blocking(platform::dictate).await.map_err(|e| e.to_string())?
 }
 

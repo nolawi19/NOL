@@ -27,7 +27,17 @@ Categories:
 | Ask Claude about a screenshot | High | 2 + 5 | `core/screen.ts` `askClaude`, `files.rs` `ingest_screenshot` | Second consent, one JPEG still (≤ 1568 px long edge), saved to the inbox and attached to the chat; sent only when the user sends a message. Raw-bytes IPC, JPEG/PNG magic checked in Rust, 12 MB cap. |
 | Know the focused app | Low | 7 | — | Needs a Rust reader for the foreground window (`GetForegroundWindow`); impossible on Wayland by design (category 6 there). |
 | Create / edit files | Medium | 7 | `core/capabilities.ts` (`ComputerAction`, `policyFor`) | Policy: per-action preview and confirm. No executor. Claude Code already does this under its own permissions. |
-| Run commands | Medium | 7 | same | Coucou approves Claude Code's commands; it deliberately runs none of its own. |
+| Run commands | Medium | 7 | same | Coucou approves Claude Code's commands; it runs no command that Claude, a web page or the user wrote. It only starts a few read-only helpers with fixed arguments, on a click: `docker ps`, and on Linux `gsettings` (wallpaper) and `gdbus` (MPRIS media). |
+| Dictation (push to talk) | High | 2 | `platform/windows.rs` `dictate`, chat mic button | Windows speech recognition, one sentence per click, text goes into the field (never sent by itself). Needs Windows' microphone and online-speech privacy switches. Not available on Linux. |
+| Read aloud | Low | 1 | insight view | The system's own voices (`speechSynthesis`). |
+| Wallpaper match | Low | 1 | `desktop.rs` `wallpaper`, `core/wallpaper.ts` | On a click; image ≤ 40 MB, image formats only, sampled locally, never sent. |
+| Now playing / media keys | Low | 1 | `platform/*` `now_playing`, `media_control` | Windows media session or Linux MPRIS; read while the Desk is open; play/pause/next on a click. |
+| Docker containers | Low | 1 | `desktop.rs` `docker_ps` | `docker ps --all` on a click, read-only. |
+| Weather | Low | 1 + 5 | `desktop.rs` `weather` | Open-Meteo, only after the user picks a place; sends that place's coordinates only. |
+| Claude Code cost | Low | 1 | `hook/` `--statusline` | Only when Coucou can be the status line (none set); forwards cost, duration, lines, model — not the transcript. |
+| Panic / hold | — | 1 | `core/guard.ts` | Denies the request on screen (the click) and returns every new one to the terminal; never approves. |
+| Approval counts | Low | 1 | `core/guard.ts` | SHA-256 of tool + target with allow/deny counts; no command text. Clear in Security center. |
+| Security log | Medium | 1 | `core/guard.ts` | Off by default; scrubbed request lines for 90 days, on this computer; weekly report. |
 | Mouse control | High | 7 (+6 on Wayland) | same | Policy: per-action approval, visible indicator, stop control. Would need `SendInput` on Windows. Not implemented. |
 | Keyboard control | High | 7 (+6 on Wayland) | same | As above. Not implemented. |
 | Device identity | — | 1 | `core/devices.ts` | ECDSA P-256 key pair from WebCrypto, private key non-extractable, kept in IndexedDB. Fingerprint shown in Settings → Devices and the command center. |

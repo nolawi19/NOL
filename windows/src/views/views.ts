@@ -15,6 +15,7 @@ import { buildCenter } from "./center";
 import { buildWelcome } from "./welcome";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { buildBoot, buildInsight, buildPalette, buildTimeline } from "./expansion";
+import { buildDesk, buildDiff, buildReplay, buildSessions, buildTests } from "./desk";
 import { MODES, type Mode } from "../core/prefs";
 import { REVERSIBILITY_LABEL, RISK_COLOR, RISK_LEVEL_LABEL } from "../core/risk";
 import { Session, shortSummary } from "../core/session";
@@ -56,6 +57,17 @@ export interface ViewActions {
   saveToMemory(kind: MemoryItem["kind"], title: string, text: string, project: string | null): Promise<boolean>;
   /** The startup check ended (or was skipped). */
   bootDone(): void;
+  /** Deny the request on screen and send every new one to the terminal. */
+  panic(): Promise<void>;
+  releaseHold(): void;
+  feed(): void;
+  pet(): void;
+  dance(): void;
+  /** Show a file change (a tool record id), or the latest one. */
+  openDiff(ref?: string): void;
+  /** Puts the clipboard's text in the chat field (the user sends it). */
+  askClipboard(): Promise<void>;
+  whatNext(): void;
 }
 
 /** "delivered": the relay got it. "late": it had already timed out. "failed": no relay reached. */
@@ -112,6 +124,7 @@ const TABS: { view: IslandViewName; title: string; path: string }[] = [
   { view: "prompt", title: "Ask Claude", path: ICONS.bubble },
   { view: "upload", title: "Drop a file", path: ICONS.plus },
   { view: "center", title: "Command center", path: LINE.grid },
+  { view: "desk", title: "Desk — focus, reminders, music, Mochi", path: ICONS.timer },
 ];
 
 /** Views that already tell the user what is going on: no capsule over them. */
@@ -483,8 +496,10 @@ function buildApproval(actions: ViewActions): ViewHost {
   const titleEl = h("span", { class: "v-title", text: "Permission needed" });
   const who = h("span", { class: "v-who" });
   const countdown = h("span", { class: "appr-count", title: "After this, Claude Code asks in the terminal" });
+  // "You allowed this 4× before" — from hashed counts, never stored as text.
+  const seen = h("span", { class: "seen-chip" });
   const riskChip = h("span", { class: "risk-chip" });
-  const head = h("div", { class: "v-head" }, badge, titleEl, who, riskChip, h("span", { class: "grow" }), countdown);
+  const head = h("div", { class: "v-head" }, badge, titleEl, who, riskChip, seen, h("span", { class: "grow" }), countdown);
 
   const toolIcon = icon(LINE.terminal, 10, 2.3);
   const toolName = h("span");
@@ -659,6 +674,12 @@ function buildApproval(actions: ViewActions): ViewHost {
         tickCountdown();
       }
       who.textContent = whoLabel(claudeTask());
+      const c = req?.counts;
+      seen.hidden = !c || (c.allow === 0 && c.deny === 0);
+      if (c) {
+        seen.textContent = c.allow && c.deny ? `${c.allow}× allowed · ${c.deny}× denied` : c.allow ? `Allowed ${c.allow}× before` : `Denied ${c.deny}× before`;
+        seen.title = "How often you answered this exact request before. It's never answered for you.";
+      }
 
       const expanded = State.detailExpanded;
       code.classList.toggle("expanded", expanded);
@@ -928,6 +949,11 @@ export function buildViews(
   map.set("timeline", buildTimeline(actions));
   map.set("insight", buildInsight(actions));
   map.set("boot", buildBoot(() => actions.bootDone()));
+  map.set("desk", buildDesk(actions));
+  map.set("diff", buildDiff(actions));
+  map.set("replay", buildReplay(actions));
+  map.set("tests", buildTests(actions));
+  map.set("sessions", buildSessions(actions));
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());
   map.set("choose", buildChoose(actions));

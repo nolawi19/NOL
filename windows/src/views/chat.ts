@@ -10,7 +10,7 @@
 
 import { h, clear } from "./dom";
 import { ICONS, LINE } from "./icons";
-import { Bridge, type ChatContext } from "../core/bridge";
+import { Bridge, IS_TAURI, type ChatContext } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import { Memory } from "../core/memory";
@@ -194,7 +194,30 @@ export function buildPrompt(onHeightChange: () => void, openSettings: (page: str
   }) as HTMLInputElement;
   const sendIcon = icon(ICONS.arrowUp, 11, 0);
   const send = h("button", { class: "send-btn fx-magnetic", type: "button", title: "Send", "aria-label": "Send" }, sendIcon, h("i", { class: "spinner" }));
-  const bar = h("div", { class: "chat-bar" }, input, send);
+  // Push to talk: one sentence through Windows speech recognition, into the
+  // field — never sent on its own. Hidden where the OS has no recogniser.
+  const mic = h("button", { class: "mic-btn", type: "button", title: "Speak (Windows speech recognition)", "aria-label": "Speak" }, icon(LINE.speaker, 11, 2.1));
+  mic.hidden = !IS_TAURI || !/Windows/i.test(navigator.userAgent);
+  mic.addEventListener("click", async () => {
+    if (mic.classList.contains("listening")) return;
+    mic.classList.add("listening");
+    mic.title = "Listening… speak now";
+    try {
+      const text = await Bridge.dictate();
+      if (text) {
+        input.value = input.value ? `${input.value} ${text}` : text;
+        updateSendState();
+      }
+    } catch (err) {
+      failed = { query: input.value, message: String((err as Error)?.message ?? err).replace(/^Error:\s*/, "") };
+      State.notify();
+    } finally {
+      mic.classList.remove("listening");
+      mic.title = "Speak (Windows speech recognition)";
+      input.focus();
+    }
+  });
+  const bar = h("div", { class: "chat-bar" }, input, mic, send);
 
   const shell = h("div", { class: "card fx-glass wash chat-card" }, h("div", { class: "chat-body" }, top, log, bar));
   shell.style.setProperty("--wash", "rgba(99,102,241,0.5)");
@@ -360,6 +383,11 @@ export function buildPrompt(onHeightChange: () => void, openSettings: (page: str
       updateSendState();
     },
     focus() {
+      if (State.chatDraft) {
+        input.value = State.chatDraft;
+        State.chatDraft = "";
+        updateSendState();
+      }
       input.focus();
       input.select();
     },

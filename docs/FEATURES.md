@@ -184,7 +184,7 @@ working when every gate is satisfied at runtime.
 | Rate limiting (10 s gap, 30/hour per rule) | ✅ | S F | |
 | Every run on the timeline | ✅ | S | |
 | Action: approve a permission | ⛔ | S | never |
-| Action: run a command / script | ⛔ | S | Coucou runs none of its own commands |
+| Action: run a command / script | ⛔ | S | Coucou never runs a command someone wrote; only fixed read-only helpers on a click (docker ps, gsettings, gdbus) |
 | Action: send an email | 🔌 | A P | Resend key exists for reading; sending needs an explicit click (repo rule) |
 | Time-based triggers (every morning…) | 🧪 | F | |
 | Conditions on time of day, mode | 🧪 | — | |
@@ -262,8 +262,9 @@ working when every gate is satisfied at runtime.
 | Vercel, GitHub, Stripe, Resend, n8n, Notion, Cal.com pills | 🔑 | A N | unchanged pollers |
 | Integration success / failure as automation triggers | ✅ | — | |
 | Refresh from the palette | ✅ | N | |
-| Linear, Jira, Sentry, Slack reading | 🔌 | A N | not integrated |
-| GitHub Actions run status | 🔌 | A N | the GitHub token exists; this endpoint isn't polled |
+| Sentry, Linear, Jira | 🔑 | A N | pills with issue lists; Sentry raises an event on a new issue |
+| Slack reading | 🔌 | A N | not integrated |
+| GitHub Actions run status | 🔑 | A N | latest run of the 5 most recently pushed repos; event when one finishes |
 
 ## 15. Security center
 
@@ -295,6 +296,47 @@ working when every gate is satisfied at runtime.
 | Cursor events throttled when far from the island | ✅ | F | `island.rs` |
 
 ---
+
+## 18. The 36 ideas (October 2026)
+
+| # | Idea | | Gates | Where / notes |
+|---|---|---|---|---|
+| 1 | Live diff preview | ✅ | S | `core/session.ts` `changeOf`, `views/desk.ts` Change; from the Edit/Write request itself (each string capped at 2,000 chars by the relay) |
+| 2 | Cost meter and budget alert | ✅ | P | `coucou-hook --statusline`, `core/sessions.ts`; needs Coucou as the status line (added with the hooks only when none exists). Tokens aren't reported by Claude Code — cost, duration, lines and a >200k-context flag are |
+| 3 | "Pause Claude" | ✅ / ⛔ | S | Hold (see 35) sends every request back to the terminal; actually stopping Claude Code is its own Esc key — Coucou can't and won't kill it |
+| 4 | Session replay | ✅ | — | step through the last 200 tool calls, with play/pause and the change of each edit |
+| 5 | Approval memory | ✅ | S | "Allowed 4× before", SHA-256 counts only; never answers for you |
+| 6 | Test dashboard | ✅ | — | pass/fail bars, durations, first error line, where it first broke |
+| 7 | Sessions side by side | ✅ | — | every session_id, project colour, state, tools, failures, cost |
+| 8 | Focus timer | ✅ | U | switches to Focus mode and back; badge "Deep work" |
+| 9 | Daily recap | ✅ | — | at the hour you choose, written locally; "What next?" asks Claude |
+| 10 | Quick notes | ✅ | P | Desk or Ctrl+K "note …"; needs memory on |
+| 11 | Clipboard to Claude | ✅ | P | on a click; the text lands in the chat field, you send it |
+| 12 | Reminders | ✅ | U | "20m …", "1h30 …", "at 17:30 …"; persisted, single timer |
+| 13 | Calendar strip | 🔑 | A | Cal.com next booking + heads-up 10 min before; Google Calendar needs OAuth Coucou doesn't have (🔌) |
+| 14 | Mochi outfits | ✅ | — | 8 outfits drawn over the canvas |
+| 15 | Levels, XP, badges | ✅ | — | 13 badges from real events, local only |
+| 16 | Celebrations | ✅ | U | confetti on passing tests, levels, badges; off with reduced motion |
+| 17 | Sleepy at night | ✅ | — | once a night after 11 pm, if Claude is active |
+| 18 | Pet Mochi | ✅ | — | feed, pet, dance, drag it around (it springs back) |
+| 19 | Wallpaper match | ✅ | P | on a click; sampled locally |
+| 20 | Time-of-day styles | ✅ | — | morning / day / night style numbers |
+| 21 | Style sharing | ✅ | — | copy "Coucou style #048213"; type a number to apply |
+| 22 | Animated textures | ✅ | F U | stars, rain, snow, fireflies; paused while hidden |
+| 23 | Island position | ✅ / ⛔ | U | top left / centre / right; the bottom edge isn't offered — the island's shape and motion are built for the top |
+| 24 | GitHub Actions | 🔑 | A N | see Integrations |
+| 25 | Sentry | 🔑 | A N | |
+| 26 | Linear / Jira | 🔑 | A N | |
+| 27 | Now playing (Spotify and any player) | ✅ | C | Windows media session, Linux MPRIS; play/pause/next. Spotify's own Web API would need OAuth (🔌) |
+| 28 | Docker | ✅ | C | `docker ps` on a click |
+| 29 | Weather and time | ✅ | N P | Open-Meteo after you pick a place; clock in the compact island |
+| 30 | Push to talk | ✅ / 🖥 | H P | Windows speech recognition; not on Linux (no built-in engine) |
+| 31 | Read aloud | ✅ | — | system voices |
+| 32 | "What should I do next?" | 🔑 | A N | Claude reads the recent activity |
+| 33 | Phone widget | 📱 | M B | needs Coucou Mobile |
+| 34 | Approve from a watch | 📱 | M B P | needs Coucou Mobile and a watch app; always an explicit tap |
+| 35 | Panic button | ✅ | S | Desk, Ctrl+K, Security center |
+| 36 | Weekly security report | ✅ | S P | opt-in local log, 90 days |
 
 ## Never
 

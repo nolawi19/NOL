@@ -73,6 +73,34 @@ export const scenarios: Record<string, () => void | Promise<void>> = {
     await wait(1200);
     hook("PostToolUse", { tool_name: "Bash", tool_use_id: "tu-2" });
   },
+  "Edit with diff": () =>
+    hook("PreToolUse", {
+      tool_name: "Edit",
+      tool_use_id: `e-${Date.now()}`,
+      tool_input: {
+        file_path: `${cwd}\\src\\invoice.ts`,
+        old_string: "export function total(items) {\n  return items.reduce((s, i) => s + i.price, 0);\n}",
+        new_string: "export function total(items, vat = 0.2) {\n  const net = items.reduce((s, i) => s + i.price, 0);\n  return Math.round(net * (1 + vat) * 100) / 100;\n}",
+      },
+    }),
+  "Second session": () => {
+    devEmit("hook", { hook_event_name: "SessionStart", session_id: "other", cwd: "C:\\Users\\dev\\projects\\marketing-site" });
+    devEmit("hook", { hook_event_name: "PreToolUse", session_id: "other", cwd: "C:\\Users\\dev\\projects\\marketing-site", tool_name: "Read", tool_input: { file_path: "index.astro" } });
+  },
+  "Status line cost": () =>
+    hook("StatusLine", { model: "Opus 5.5", cost_usd: 0.84, duration_ms: 312000, lines_added: 48, lines_removed: 9 }),
+  "Tests pass": async () => {
+    hook("PreToolUse", { tool_name: "Bash", tool_input: { command: "npm test -- --watch=false" }, tool_use_id: "tu-9" });
+    await wait(900);
+    hook("PostToolUse", { tool_name: "Bash", tool_use_id: "tu-9" });
+  },
+  Desk: () => view("desk"),
+  Diff: () => view("diff"),
+  Replay: () => view("replay"),
+  Tests: () => view("tests"),
+  Sessions: () => view("sessions"),
+  "Outfit: crown": () => setPrefs({ mochi: { skin: "crown", celebrate: true, nightNudge: true } }),
+  "Texture: snow": () => setPrefs({ texture: "snow" }),
   Palette: () => view("palette"),
   Timeline: () => view("timeline"),
   Center: () => view("center"),
@@ -135,7 +163,8 @@ const groups: [string, string[]][] = [
   ["Claude Code", ["Session start", "Prompt", "Read file", "Edit file", "Run command", "Search", "Web fetch", "Subagent"]],
   ["Needs you", ["Permission", "Long permission", "Risky permission", "Question", "Rate limit"]],
   ["Terminal", ["Tests fail", "Build ok"]],
-  ["Views", ["Palette", "Timeline", "Center", "Insight", "Boot"]],
+  ["Views", ["Palette", "Timeline", "Center", "Insight", "Boot", "Desk", "Diff", "Replay", "Tests", "Sessions"]],
+  ["New", ["Edit with diff", "Second session", "Status line cost", "Tests pass", "Outfit: crown", "Texture: snow"]],
   ["Modes", ["Focus mode", "Night mode", "Normal mode"]],
   ["Ends", ["Stop", "Stop failure", "Session end"]],
   ["Integrations & app", ["Vercel deploy", "GitHub stats", "Open island", "Quick settings", "Pause / resume", "Light desktop", "Full demo"]],

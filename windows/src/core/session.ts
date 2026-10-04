@@ -34,6 +34,57 @@ export interface ToolRecord {
   outcome: "running" | "ok" | "failed";
   /** First line of the failure, when Claude Code sent one. */
   error: string | null;
+  /** What an Edit / Write / MultiEdit changed, from the request itself. */
+  change: FileChange | null;
+}
+
+export interface FileChange {
+  file: string;
+  before: string;
+  after: string;
+  /** "edit": before → after is the exact replacement; "write": the new contents (the old ones aren't sent). */
+  kind: "edit" | "write";
+  /** The relay cut one of the strings at 2,000 characters. */
+  truncated: boolean;
+}
+
+export interface TestRun {
+  command: string;
+  start: number;
+  end: number;
+  ok: boolean;
+  error: string | null;
+  project: string;
+}
+
+const MAX_CHANGE = 6000;
+
+/** The change an edit-type tool call carries in its input. */
+export function changeOf(tool: string, input: Record<string, unknown>): FileChange | null {
+  const s = (k: string, o: Record<string, unknown> = input) => (typeof o[k] === "string" ? (o[k] as string) : "");
+  const file = s("file_path") || s("notebook_path");
+  const cut = (t: string) => t.slice(0, MAX_CHANGE);
+  const trunc = (...t: string[]) => t.some((x) => x.endsWith("…") || x.length > MAX_CHANGE);
+  if (tool === "Edit") {
+    const before = s("old_string");
+    const after = s("new_string");
+    return { file, before: cut(before), after: cut(after), kind: "edit", truncated: trunc(before, after) };
+  }
+  if (tool === "MultiEdit" && Array.isArray(input.edits)) {
+    const edits = (input.edits as unknown[]).filter((e): e is Record<string, unknown> => typeof e === "object" && e != null);
+    const before = edits.map((e) => s("old_string", e)).join("\n⋯\n");
+    const after = edits.map((e) => s("new_string", e)).join("\n⋯\n");
+    return { file, before: cut(before), after: cut(after), kind: "edit", truncated: trunc(before, after) };
+  }
+  if (tool === "Write") {
+    const content = s("content");
+    return { file, before: "", after: cut(content), kind: "write", truncated: trunc(content) };
+  }
+  if (tool === "NotebookEdit") {
+    const src = s("new_source");
+    return { file, before: "", after: cut(src), kind: "edit", truncated: trunc(src) };
+  }
+  return null;
 }
 
 export interface SessionSnapshot {
@@ -54,7 +105,7 @@ export interface SessionSnapshot {
 const SHELL = new Set(["Bash", "PowerShell"]);
 const EDITS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 const READS = new Set(["Read", "LS", "Glob", "Grep", "NotebookRead"]);
-const MAX_RECORDS = 80;
+const MAX_RECORDS = 200;
 
 function targetOf(input: Record<string, unknown>): string {
   for (const k of ["command", "file_path", "notebook_path", "path", "url", "query", "pattern", "description"]) {
@@ -75,6 +126,8 @@ class Tracker {
   turnStart: number | null = null;
   prompt: string | null = null;
   records: ToolRecord[] = [];
+  /** Test runs, newest first — kept across turns (not across Coucou restarts). */
+  tests: TestRun[] = [];
   /** Turn-scoped counters, reset on every prompt. */
   private changed = new Set<string>();
   private reads = 0;
@@ -117,6 +170,7 @@ class Tracker {
       end: null,
       outcome: "running",
       error: null,
+      change: changeOf(tool, input),
     };
     this.records.push(rec);
     if (this.records.length > MAX_RECORDS) {
@@ -140,6 +194,10 @@ class Tracker {
     rec.end = Date.now();
     rec.outcome = ok ? "ok" : "failed";
     if (!ok && error) rec.error = error.split("\n").find((l) => l.trim())?.trim().slice(0, 200) ?? null;
+    if (rec.commandClass === "test") {
+      this.tests.unshift({ command: rec.target, start: rec.start, end: rec.end, ok, error: rec.error, project: this.project });
+      if (this.tests.length > 40) this.tests.length = 40;
+    }
     return rec;
   }
 
@@ -161,6 +219,11 @@ class Tracker {
     this.changed.clear();
     this.reads = 0;
     this.turnRecords = 0;
+  }
+
+  /** Edit / Write records with their change, oldest first. */
+  get changes(): ToolRecord[] {
+    return this.records.filter((r) => r.change != null);
   }
 
   get turn(): ToolRecord[] {

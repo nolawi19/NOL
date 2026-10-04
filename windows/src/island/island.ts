@@ -30,11 +30,17 @@ import { Memory, scrub } from "../core/memory";
 import { localSummary, Session, summaryPrompt } from "../core/session";
 import { COMMAND_CLASS_LABEL, REVERSIBILITY_LABEL } from "../core/risk";
 import { formatStyleNumber, styleFromNumber, themeInfo } from "../core/styles";
+import { Guard } from "../core/guard";
+import { Progressor, onProgress } from "../core/progress";
+import { Schedule } from "../core/schedule";
+import { onPrefsChanged } from "../core/store";
+import { SKIN_SVG } from "../mochi/skins";
+import { Desk } from "../core/desk";
 
 /** Views with a text field: the only times the island takes keyboard focus. */
 const TEXT_VIEWS: ReadonlySet<IslandViewName> = new Set(["prompt", "palette", "timeline"]);
 /** Views that draw Mochi small, without the energy core around it. */
-const NO_CORE_VIEWS: ReadonlySet<IslandViewName> = new Set(["welcome", "center", "palette", "timeline"]);
+const NO_CORE_VIEWS: ReadonlySet<IslandViewName> = new Set(["welcome", "center", "palette", "timeline", "desk", "diff", "replay", "tests", "sessions"]);
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -52,6 +58,8 @@ const REDUCED_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 export class Island {
   readonly fsm = new IslandStateMachine();
+  /** The view actions, also reachable from main (tray, settings window events). */
+  actions!: ViewActions;
 
   private root: HTMLElement;
   private islandEl!: HTMLElement;
@@ -64,6 +72,14 @@ export class Island {
   private scan!: HTMLElement;
   /** Cursor over the island, −1…1 from its centre (0 when away). */
   private parallax = { x: 0, y: 0 };
+  /** Mochi's outfit, drawn over the canvas and following it. */
+  private skin = h("div", { id: "mochi-skin", "aria-hidden": "true" });
+  private skinId = "none";
+  private texture = h("div", { id: "island-texture", "aria-hidden": "true" });
+  private confetti = h("div", { id: "confetti", "aria-hidden": "true" });
+  /** Mochi being dragged around (it springs back on release). */
+  private drag: { x: number; y: number; dx: number; dy: number; moved: boolean } | null = null;
+  private clockTimer: number | null = null;
   /** Named core state bookkeeping: one timer at a time, none while busy. */
   private dormant = false;
   private dormantTimer: number | null = null;
@@ -141,7 +157,7 @@ export class Island {
   // ── DOM ─────────────────────────────────────────────────────────────────────
 
   private build() {
-    const actions: ViewActions = {
+    const actions: ViewActions = (this.actions = {
       setView: (v) => this.setView(v),
       collapse: () => this.collapse(),
       setFocus: (id) => {
@@ -163,6 +179,8 @@ export class Island {
           integration_stripe: "https://dashboard.stripe.com/payments",
           integration_notion: "https://notion.so",
           integration_calcom: "https://app.cal.com/bookings",
+          integration_sentry: "https://sentry.io",
+          integration_linear: "https://linear.app",
         };
         if (task.id === "integration_claude") void Bridge.openInVSCode(task.sessionCwd ?? null);
         else if (task.id === "integration_n8n") void Bridge.openN8n();
@@ -194,6 +212,9 @@ export class Island {
         }
         State.setPillBadge("integration_claude", null);
         if (result === "delivered") {
+          void Guard.recordDecision(req.tool, req.target, d);
+          void Guard.setDecision(req.logId ?? null, d);
+          Progressor.decision(d === "deny", req.risk?.level === "high" || req.risk?.level === "critical");
           Sound.play(d === "deny" ? "blip" : "approve");
           State.updateTask("integration_claude", "working");
           State.log({
@@ -251,7 +272,43 @@ export class Island {
         State.showFlash(`${MODES[mode].title} mode`, "#A78BFA", "info", 2600, true);
         State.notify();
       },
+      panic: async () => {
+        // Pressing the button is the click: the request on screen is denied.
+        Guard.setHold(true);
+        if (State.pendingApproval) await actions.decide("deny");
+        Sound.play("error");
+        State.log({ text: "Panic: on hold", detail: "Requests go to the terminal; automations paused", tone: "alert", icon: LINE.shield, color: "#F4505E", cat: "permission" });
+        State.showFlash("On hold — requests go to the terminal", "#F4505E", "error", 5000, true);
+      },
+      releaseHold: () => {
+        Guard.setHold(false);
+        State.log({ text: "Hold released", tone: "info", icon: LINE.shieldCheck, color: "#34D399", cat: "permission" });
+        State.showFlash("Back to normal", "#34D399", "success", 2500, true);
+      },
+      openDiff: (ref) => {
+        Desk.diffRef = ref ?? null;
+        this.setView("diff");
+      },
+      askClipboard: async () => {
+        let text = "";
+        try {
+          text = (await navigator.clipboard.readText()).trim();
+        } catch {
+          /* the webview may refuse: the chat field still takes Ctrl+V */
+        }
+        State.chatDraft = text ? `Explain this:\n\n${text.slice(0, 4000)}` : "";
+        if (!text) State.showFlash("Couldn't read the clipboard — paste it with Ctrl+V", "#9AA3B2", "info", 3500, true);
+        this.setView("prompt");
+      },
+      whatNext: () => {
+        this.setView("insight");
+        void Desk.next().catch(() => {});
+      },
+      feed: () => this.feed(),
+      pet: () => this.pet(),
+      dance: () => this.dance(),
       setStyle: (n) => {
+        if (n != null) Progressor.styled();
         const spec = n == null ? null : styleFromNumber(n);
         State.settings.prefs = { ...State.prefs, style: { ...State.prefs.style, spec } };
         this.applySettings();
@@ -304,10 +361,34 @@ export class Island {
       bootDone: () => {
         if (State.view === "boot") this.launch();
       },
-    };
+    });
     Automation.init({
       open: (view) => this.alert(view),
       summarize: () => this.summarize(),
+    });
+    onPrefsChanged(() => {
+      this.applySettings();
+      Schedule.refresh();
+    });
+    onProgress((a) => {
+      const parts: string[] = [];
+      if (a.levelUp) parts.push(`Level ${a.levelUp}!`);
+      for (const b of a.badges) parts.push(`Badge: ${b.title}`);
+      this.celebrate(parts.join(" · "));
+      for (const b of a.badges) State.log({ text: `Badge · ${b.title}`, detail: b.desc, tone: "success", icon: LINE.sparkle, color: "#F5A524", cat: "session" });
+      if (a.levelUp) State.log({ text: `Level ${a.levelUp}`, tone: "success", icon: LINE.sparkle, color: "#F5A524", cat: "session" });
+    });
+    Schedule.init({
+      flash: (text, color, important) => State.showFlash(text, color, "info", 7000, important),
+      sound: (name) => Sound.play(name),
+      open: (view) => this.alert(view),
+      setMode: (mode) => actions.setMode(mode),
+      setStyle: (n) => actions.setStyle(n),
+      recap: () => this.recap(),
+      yawn: () => {
+        this.engine.triggerEmote("yawn", 2.4);
+        Sound.play("yawn");
+      },
     });
 
     this.wakeStrip = h("div", { id: "wake-strip" });
@@ -351,6 +432,8 @@ export class Island {
       h("div", { id: "island-sheen", class: "fx-scanlines" }),
       // Texture and outline of the chosen style (Settings → Styles); empty otherwise.
       h("div", { id: "island-pattern" }),
+      // Animated texture (Settings → Desk & Mochi), off by default.
+      this.texture,
       // Cursor light, under the glass cards so it shows through them.
       h("div", { class: "fx-spot" }),
       this.greetingCanvas,
@@ -370,6 +453,8 @@ export class Island {
       this.ring,
       this.core.el,
       this.botCanvas,
+      this.skin,
+      this.confetti,
       this.miniGrid,
     );
 
@@ -420,6 +505,73 @@ export class Island {
   boot() {
     this.fsm.forceHome();
     this.expand("boot");
+  }
+
+  // ── Celebrations, Mochi's moods, the day ──────────────────────────────────
+
+  /** Confetti and a proud Mochi. Skipped with reduced motion or when turned off. */
+  celebrate(text?: string) {
+    if (text) State.showFlash(`🎉 ${text}`, "#F5A524", "success", 4500, true);
+    const calm = document.documentElement.classList.contains("reduce-motion") || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!State.prefs.mochi.celebrate || calm || State.mode === "hidden") return;
+    this.engine.triggerEmote("proud", 1.8);
+    Sound.play("proud");
+    const colors = ["#F5A524", "#34D399", "#3B9EFF", "#F472B6", "#A78BFA", "#22D3EE"];
+    this.confetti.replaceChildren();
+    this.confetti.style.left = `${this.botCx.value}px`;
+    this.confetti.style.top = `${this.botCy.value}px`;
+    for (let i = 0; i < 22; i++) {
+      const a = (i / 22) * Math.PI * 2 + Math.random() * 0.3;
+      const r = 40 + Math.random() * 70;
+      const el = h("i", { style: `--dx:${(Math.cos(a) * r).toFixed(0)}px;--dy:${(Math.sin(a) * r * 0.6 - 20).toFixed(0)}px;--c:${colors[i % colors.length]};--rot:${Math.round(Math.random() * 540)}deg` });
+      this.confetti.append(el);
+    }
+    this.confetti.classList.remove("go");
+    void this.confetti.offsetWidth;
+    this.confetti.classList.add("go");
+    window.setTimeout(() => this.confetti.replaceChildren(), 1600);
+  }
+
+  feed() {
+    this.engine.gulp();
+    Sound.play("gulp");
+    window.setTimeout(() => this.engine.triggerEmote("love", 1.6), 500);
+    this.ensureRunning();
+  }
+
+  pet() {
+    this.engine.triggerEmote("love", 2);
+    Sound.play("love");
+    this.ensureRunning();
+  }
+
+  dance() {
+    this.engine.doRoll(900, 1);
+    this.engine.triggerEmote("happy", 2.2);
+    Sound.play("wink");
+    this.botCanvas.classList.remove("dance");
+    void this.botCanvas.offsetWidth;
+    this.botCanvas.classList.add("dance");
+    window.setTimeout(() => this.botCanvas.classList.remove("dance"), 2200);
+    this.ensureRunning();
+  }
+
+  /** The day's recap: written locally, shown in the insight view. */
+  recap() {
+    Desk.showRecap();
+    if (MODES[State.prefs.mode].autoOpen) this.alert("insight");
+    else State.showFlash("Your day's recap is ready", "#A78BFA", "info", 6000, true);
+  }
+
+  /** Clock in the compact island: a timer only while it's actually shown. */
+  private syncClock() {
+    const want = State.prefs.compactClock && State.mode === "compact";
+    if (want && this.clockTimer == null) {
+      this.clockTimer = window.setInterval(() => State.notify(), 30_000);
+    } else if (!want && this.clockTimer != null) {
+      window.clearInterval(this.clockTimer);
+      this.clockTimer = null;
+    }
   }
 
   /** Asks Claude to summarise the current session; the insight view shows it. */
@@ -723,7 +875,11 @@ export class Island {
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
     this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
-    this.islandEl.style.transform = `translateX(-50%)`;
+    const x = this.islandX(w);
+    // Relative to the middle of the page, so the dev preview (any width) and
+    // the 720 px app window place it the same way.
+    this.islandEl.style.left = `calc(50% + ${(x - PANEL_W / 2).toFixed(2)}px)`;
+    this.islandEl.style.transform = "none";
     // The fillets grow with the corner radius, and vanish as the island retracts.
     // Liquid neck: while the island pours out of the edge the fillets swell
     // with its speed, then settle back as it comes to rest.
@@ -742,7 +898,7 @@ export class Island {
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
 
-    const rect = { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
+    const rect = { x, y: 0, w, h: hh };
     const p = this.pushedRect;
     if (Math.abs(p.x - rect.x) > 0.5 || Math.abs(p.w - rect.w) > 0.5 || Math.abs(p.h - rect.h) > 0.5) {
       this.pushedRect = rect;
@@ -750,11 +906,18 @@ export class Island {
     }
   }
 
+  /** Left edge of the island in the window: centred, or kept against one side. */
+  private islandX(w: number): number {
+    const side = (PANEL_W - EXPANDED_W) / 2;
+    const p = State.settings.placement;
+    return p === "left" ? side : p === "right" ? PANEL_W - side - w : (PANEL_W - w) / 2;
+  }
+
   /** Island rect in window coordinates (origin top-left of the 720×320 window). */
   private islandRect(): { x: number; y: number; w: number; h: number } {
     const w = this.width.value;
     const hh = this.height.value;
-    return { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
+    return { x: this.islandX(w), y: 0, w, h: hh };
   }
 
   // ── Window collapse (hidden → tiny wake strip, zero polling) ────────────────
@@ -798,8 +961,32 @@ export class Island {
       }
       if (this.isBotHit(e.clientX, e.clientY)) {
         this.cancelBotHover();
+        // A click pokes Mochi; a drag picks it up (it springs back home).
+        this.drag = { x: e.clientX, y: e.clientY, dx: 0, dy: 0, moved: false };
+      }
+    });
+    window.addEventListener("mousemove", (e) => {
+      const d = this.drag;
+      if (!d) return;
+      d.dx = Math.max(-260, Math.min(260, e.clientX - d.x));
+      d.dy = Math.max(-40, Math.min(120, e.clientY - d.y));
+      if (!d.moved && Math.hypot(d.dx, d.dy) > 6) {
+        d.moved = true;
+        this.engine.triggerEmote("surprised", 1.2);
+      }
+      if (d.moved) this.ensureRunning();
+    });
+    window.addEventListener("mouseup", () => {
+      const d = this.drag;
+      if (!d) return;
+      this.drag = null;
+      if (d.moved) {
+        this.engine.triggerEmote("happy", 1.4);
+        Sound.play("pop");
+      } else {
         this.engine.slap();
       }
+      this.ensureRunning();
     });
 
     window.addEventListener("keydown", (e) => {
@@ -1011,8 +1198,9 @@ export class Island {
 
   private updateBotTargets() {
     const p = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
-    this.botCx.target = p.cx;
-    this.botCy.target = p.cy;
+    const d = this.drag?.moved ? this.drag : null;
+    this.botCx.target = p.cx + (d ? d.dx : 0);
+    this.botCy.target = p.cy + (d ? d.dy : 0);
     this.botSize.target = p.diameter / 0.6;
 
     const greetingActive = State.mode === "expanded" && State.view === "greeting";
@@ -1025,6 +1213,14 @@ export class Island {
       // These two draw their own: the onboarding core and the activity panel.
       !NO_CORE_VIEWS.has(State.view);
     this.core.place(this.botCx.value, this.botCy.value, p.diameter, coreOn, this.parallax.x, this.parallax.y);
+
+    // The outfit follows Mochi: one transform, no layout.
+    const skinOn = visible && this.skinId !== "none" && p.diameter >= 12;
+    this.skin.classList.toggle("on", skinOn);
+    if (skinOn) {
+      const dd = this.botSize.value * 0.6;
+      this.skin.style.transform = `translate3d(${(this.botCx.value - dd / 2).toFixed(1)}px, ${(this.botCy.value - dd / 2).toFixed(1)}px, 0) scale(${(dd / 100).toFixed(3)})`;
+    }
   }
 
   private drawBot(dt: number) {
@@ -1176,11 +1372,21 @@ export class Island {
     } else if (phase) {
       line = phase.detail && phase.tone !== "alert" ? `${phase.label} · ${phase.detail}` : phase.label;
       path = phase.icon;
+    } else if (Guard.hold) {
+      line = "ON HOLD · requests go to the terminal";
+      path = LINE.shield;
+      lineColor = "#F4505E";
     } else if (State.flash) {
       line = State.flash.text;
       path = State.flash.tone === "error" ? LINE.xCircle : State.flash.tone === "success" ? LINE.checkCircle : LINE.info;
       lineColor = State.flash.color;
     }
+    if (line == null && State.prefs.compactClock) {
+      line = Desk.clockLine();
+      path = LINE.hourglass;
+      lineColor = "#9AA3B2";
+    }
+    this.syncClock();
     this.compactStatus.classList.toggle("on", line != null);
     this.compactStatus.style.setProperty("--cs", lineColor);
     if (line != null) {
@@ -1260,6 +1466,24 @@ export class Island {
     Sound.gate = (name) => soundAllowed(State.prefs, name);
     Sound.setScale(prefs.mode === "night" ? 0.5 : 1);
     applyAppearance(prefs);
+    if (prefs.mochi.skin !== this.skinId) {
+      this.skinId = prefs.mochi.skin;
+      this.skin.innerHTML = SKIN_SVG[prefs.mochi.skin] ?? "";
+    }
+    this.texture.dataset.texture = prefs.texture;
+    this.texture.replaceChildren();
+    if (prefs.texture !== "off") {
+      // A handful of particles, positioned once; CSS moves them (paused while hidden).
+      for (let i = 0; i < 18; i++) {
+        const el = h("i");
+        el.style.setProperty("--x", `${(i * 53) % 100}%`);
+        el.style.setProperty("--y", `${(i * 37) % 100}%`);
+        el.style.setProperty("--d", `${(2.4 + (i % 5) * 0.7).toFixed(1)}s`);
+        el.style.setProperty("--delay", `${((i * 0.37) % 3).toFixed(2)}s`);
+        this.texture.append(el);
+      }
+    }
+    this.syncClock();
     State.notify();
   }
 

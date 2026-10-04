@@ -112,6 +112,20 @@ export const Bridge = {
   /** A standalone question to Claude (summary, explanation). Never touches the chat. */
   claudeInsight: (prompt: string) => callOrThrow<{ text: string }>("claude_insight", { prompt }),
 
+  // ── Desktop (on a click, read-only) ───────────────────────────────────────
+  /** The wallpaper's image bytes, to match a style to it. */
+  wallpaperImage: async (): Promise<ArrayBuffer> => {
+    if (!IS_TAURI) throw new Error("not running inside Coucou");
+    return invoke<ArrayBuffer>("wallpaper_image");
+  },
+  nowPlaying: () => callOrThrow<NowPlaying | null>("now_playing"),
+  mediaControl: (action: "toggle" | "next" | "previous") => callOrThrow<void>("media_control", { action }),
+  dockerContainers: () => callOrThrow<Container[]>("docker_containers"),
+  /** One spoken sentence → text (Windows speech recognition). */
+  dictate: () => callOrThrow<string>("dictate"),
+  weatherPlaces: (query: string) => callOrThrow<Place[]>("weather_places", { query }),
+  weatherNow: (latitude: number, longitude: number) => callOrThrow<WeatherNow>("weather_now", { latitude, longitude }),
+
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
   /** Opens the configured n8n instance in the browser. */
@@ -157,6 +171,11 @@ export interface ProjectInfo {
 
 export type WebhookKind = "ntfy" | "discord" | "slack" | "json";
 
+export interface NowPlaying { title: string; artist: string; playing: boolean; source: string }
+export interface Container { name: string; image: string; state: string; status: string; health: string }
+export interface Place { name: string; country: string; admin: string; latitude: number; longitude: number }
+export interface WeatherNow { temperature: number; code: number; isDay: boolean; wind: number }
+
 export interface KeyCheck {
   status: "connected" | "missing" | "rejected" | "unreachable" | "error";
   detail: string;
@@ -170,6 +189,10 @@ export interface DroppedFile {
 
 export interface HookStatus {
   installed: boolean;
+  /** Coucou is Claude Code's status line: the cost meter works. */
+  statusLine?: boolean;
+  /** Another status line is set; Coucou leaves it alone. */
+  foreignStatusLine?: boolean;
   settingsPath: string;
   hookPath: string;
   hookReady: boolean;

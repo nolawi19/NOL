@@ -22,14 +22,15 @@ function ago(at: number): string {
   return `${Math.floor(s / 3600)}h`;
 }
 
-function entryRow(e: TimelineEntry, fresh: boolean): HTMLElement {
+function entryRow(e: TimelineEntry, fresh: boolean, open?: (ref: string) => void): HTMLElement {
   const row = h(
     "div",
-    { class: fresh ? "tl-row fresh" : "tl-row", "data-tone": e.tone, style: `--c:${e.color}` },
+    { class: `${fresh ? "tl-row fresh" : "tl-row"}${e.ref ? " has-ref" : ""}`, "data-tone": e.tone, style: `--c:${e.color}`, title: e.ref ? "Show the change" : undefined },
     h("span", { class: "tl-icon" }, icon(e.icon, 10, 2.2)),
     h("span", { class: "tl-text" }, h("b", { text: e.text }), e.detail ? h("span", { text: e.detail }) : null),
     h("time", { class: "tl-ago", "data-at": String(e.at), text: ago(e.at) }),
   );
+  if (e.ref && open) row.addEventListener("click", () => open(e.ref!));
   return row;
 }
 
@@ -181,7 +182,7 @@ export function buildCenter(actions: ViewActions): ViewHost {
         list.dataset.ids = ids;
         clear(list);
         if (entries.length === 0) list.append(empty);
-        for (const e of entries) list.append(entryRow(e, shownIds.size > 0 && !shownIds.has(e.id)));
+        for (const e of entries) list.append(entryRow(e, shownIds.size > 0 && !shownIds.has(e.id), (r) => actions.openDiff(r)));
         shownIds = new Set(entries.map((e) => e.id));
       }
 

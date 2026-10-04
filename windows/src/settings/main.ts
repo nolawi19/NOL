@@ -16,7 +16,7 @@ import { installPointerFx } from "../fx/pointer";
 import { Sound } from "../core/sound";
 import { DEFAULT_SETTINGS, type Settings, type TimelineEntry } from "../core/state";
 import {
-  ACTION_TITLES, applyAppearance, MODE_ORDER, MODES, newRuleId, readPrefs, SOUND_CATEGORIES, TRIGGERS,
+  ACTION_TITLES, applyAppearance, SKINS, TEXTURES, type Skin, type Texture, MODE_ORDER, MODES, newRuleId, readPrefs, SOUND_CATEGORIES, TRIGGERS,
   type ActionSpec, type AutomationRule, type CoreStyle, type MotionPref, type Prefs, type TriggerId, type WebhookSlot,
 } from "../core/prefs";
 import { Memory, type MemoryItem } from "../core/memory";
@@ -25,6 +25,10 @@ import {
   specIndex, STYLE_COUNT, STYLE_SPACE, styleFromNumber, themeInfo, type StyleSpec,
 } from "../core/styles";
 import { THEMES } from "../design/themes.generated";
+import { BADGES, levelOf } from "../core/progress";
+import { Guard } from "../core/guard";
+import { SKIN_SVG } from "../mochi/skins";
+import { styleFromWallpaper } from "../core/wallpaper";
 
 const THEME_COUNT = THEMES.length;
 const AUTHOR_COUNT = new Set(THEMES.map((t) => t[2])).size;
@@ -538,6 +542,15 @@ function claudeCodePage(): HTMLElement[] {
     hero,
     card("Hooks", "Coucou adds its relay to each Claude Code hook event. Nothing is written until you have seen the diff.", body),
     card(
+      "Cost meter",
+      "Claude Code tells its status line what a session has cost. When you install the hooks and have no status line of your own, Coucou adds itself as the status line (it shows “model · $cost” in the terminal, and the island gets the numbers). Your own status line, if you have one, is never replaced.",
+      hookStatus.statusLine
+        ? notice("ok", "Coucou is Claude Code's status line: cost, duration and lines changed appear in Sessions and the Desk.")
+        : hookStatus.foreignStatusLine
+          ? notice("info", "You already have a status line, so Coucou left it alone. The cost meter stays off.")
+          : notice("info", "Not active yet — it's added with the hooks (reinstall them to add it)."),
+    ),
+    card(
       "Never in the way",
       null,
       h(
@@ -692,7 +705,7 @@ const httpUrl = (v: string) => {
 const INTEGRATIONS: IntegrationDef[] = [
   { id: "integration_stripe", name: "Stripe", color: "#0570DE", blurb: "Balance and latest payments",
     fields: [{ key: "stripe-api-key", label: "Secret key", placeholder: "sk_live_…", secret: true }] },
-  { id: "integration_github", name: "GitHub", color: "#F4505E", blurb: "Stars and repositories",
+  { id: "integration_github", name: "GitHub", color: "#F4505E", blurb: "Stars, repositories and the latest GitHub Actions runs",
     fields: [{ key: "github-token", label: "Token", placeholder: "ghp_…", secret: true }] },
   { id: "integration_vercel", name: "Vercel", color: "#7C5CFF", blurb: "Deployments as they land",
     fields: [{ key: "vercel-token", label: "Token", placeholder: "…", secret: true }] },
@@ -705,8 +718,21 @@ const INTEGRATIONS: IntegrationDef[] = [
     fields: [{ key: "resend-api-key", label: "API key", placeholder: "re_…", secret: true }] },
   { id: "integration_notion", name: "Notion", color: "#8C8C8C", blurb: "Recently edited pages",
     fields: [{ key: "notion-api-key", label: "Integration token", placeholder: "ntn_…", secret: true }] },
-  { id: "integration_calcom", name: "Cal.com", color: "#C9956A", blurb: "Upcoming bookings",
+  { id: "integration_calcom", name: "Cal.com", color: "#C9956A", blurb: "Upcoming bookings, and a heads-up 10 minutes before",
     fields: [{ key: "calcom-api-key", label: "API key", placeholder: "cal_…", secret: true }] },
+  { id: "integration_sentry", name: "Sentry", color: "#A78BFA", blurb: "New unresolved issues (last 24 h)",
+    fields: [
+      { key: "sentry-org", label: "Organization slug", placeholder: "my-org", secret: false, validate: (v) => (/^[A-Za-z0-9._-]+$/.test(v) ? null : { level: "error", msg: "Just the slug, e.g. my-org." }) },
+      { key: "sentry-token", label: "Auth token (event:read)", placeholder: "sntrys_…", secret: true },
+    ] },
+  { id: "integration_linear", name: "Linear", color: "#5E6AD2", blurb: "Issues assigned to you",
+    fields: [{ key: "linear-api-key", label: "Personal API key", placeholder: "lin_api_…", secret: true }] },
+  { id: "integration_jira", name: "Jira", color: "#2684FF", blurb: "Issues assigned to you",
+    fields: [
+      { key: "jira-site", label: "Site", placeholder: "yourteam.atlassian.net", secret: false, validate: (v) => (/^(https:\/\/)?[A-Za-z0-9.-]+\.[A-Za-z]{2,}\/?$/.test(v) ? null : { level: "error", msg: "Like yourteam.atlassian.net." }) },
+      { key: "jira-email", label: "Account email", placeholder: "you@company.com", secret: false },
+      { key: "jira-token", label: "API token", placeholder: "…", secret: true },
+    ] },
 ];
 
 const MAX_ACTIVE = 4;
@@ -894,6 +920,22 @@ function displayPage(): HTMLElement[] {
   paint();
   return [
     card("Where the island lives", "Scaling, resolution changes and monitors coming and going are picked up on their own.", h("div", { class: "choices two", role: "radiogroup" }, ...items)),
+    card(
+      "Position on the top edge",
+      "The island is shaped for the top edge of the screen, so it stays there — centred, or tucked into a corner.",
+      radioChoices<Settings["placement"]>(
+        [
+          { id: "left", title: "Top left", desc: "Against the left corner." },
+          { id: "center", title: "Top centre", desc: "Where a notch would be. The default." },
+          { id: "right", title: "Top right", desc: "Against the right corner." },
+        ],
+        () => settings.placement,
+        (v) => {
+          settings.placement = v;
+          void save();
+        },
+      ),
+    ),
   ];
 }
 
@@ -1106,6 +1148,8 @@ function devicesPage(): HTMLElement[] {
         h("dt", { text: "What travels" }), h("dd", { text: "Conversation, current task and state, session id, both device identities — signed by this computer's key." }),
         h("dt", { text: "Pairing" }), h("dd", { text: "QR code with a one-time secret, then the same 6-digit code on both screens. Expires after 2 minutes." }),
         h("dt", { text: "Connection" }), h("dd", { text: "Same network first, a relay otherwise; heartbeat every 15 s, reconnect with backoff, duplicates ignored." }),
+        h("dt", { text: "Phone widget" }), h("dd", { text: "Mochi's state on the home screen — needs Coucou Mobile." }),
+        h("dt", { text: "Watch" }), h("dd", { text: "Approve from the wrist — needs Coucou Mobile and a watch app; always an explicit tap." }),
         h("dt", { text: "Specification" }), h("dd", { text: "docs/DEVICES.md in the Coucou repository." }),
       ),
     ),
@@ -1154,6 +1198,7 @@ function permissionsPage(): HTMLElement[] {
 
   return [
     ...securityCards(),
+    ...guardCards(),
     card("Allowed right now", "Grants last until you revoke them or quit Coucou. High-risk access is asked for every time.", grants),
     card("What Coucou can do", "Everything Coucou can or might do on this computer, how risky it is, and whether it exists yet. Nothing on this list acts without the permission shown.", matrix),
   ];
@@ -1648,7 +1693,8 @@ function securityCards(): HTMLElement[] {
         { class: "bullets" },
         h("li", { text: "Permission requests are only answered by your click — never by a mode, an automation or a timer." }),
         h("li", { text: "Each request shows a risk reading of the command: deletions, privileges, network, secrets, paths outside the project, and whether it can be undone. It's a reading aid, not a guarantee." }),
-        h("li", { text: "No hidden screen capture, microphone or camera. No remote control. No telemetry." }),
+        h("li", { text: "No hidden screen capture or camera. The microphone is used only while you hold the chat's talk button (Windows dictation). No remote control. No telemetry." }),
+        h("li", { text: "Coucou never runs a command Claude or a web page wrote. It only runs a few read-only helpers with fixed arguments when you ask: docker ps, and on Linux gsettings / gdbus for the wallpaper and what's playing." }),
         h("li", { text: "Keys and webhook addresses live in the OS vault and never come back to the interface." }),
       ),
     ),
@@ -1769,11 +1815,215 @@ function stylesPage(): HTMLElement[] {
     ),
     card("Fine-tune", "Every option changes something you can see. The palette is chosen below.", axes),
     card("Palettes", `${THEME_COUNT} dark palettes researched from the base16 theme collection — by ${AUTHOR_COUNT} different authors.`, search, list),
+    card(
+      "Match and share",
+      null,
+      row("Match my wallpaper", "Reads your desktop wallpaper on this computer and picks the closest palette and accent. The image never leaves the computer.", (() => {
+        const b = btn("Match", "secondary", async () => {
+          setBtnState(b, "busy");
+          try {
+            const next = await styleFromWallpaper();
+            setSpec(next);
+          } catch (err) {
+            setBtnState(b, "failed");
+            setBtnLabel(b, String((err as Error)?.message ?? err).replace(/^Error:\s*/, "").slice(0, 48));
+          }
+        }, LINE.screen);
+        return b;
+      })()),
+      row("Share", num != null ? `Send “Coucou style ${formatStyleNumber(num)}” to anyone with Coucou; they type the number in.` : "Pick a numbered style to get a shareable number.", (() => {
+        const b = btn("Copy number", "ghost", () => {
+          if (num == null) return;
+          void navigator.clipboard?.writeText(`Coucou style ${formatStyleNumber(num)}`);
+          setBtnLabel(b, "Copied");
+        }, LINE.copy);
+        b.disabled = num == null;
+        return b;
+      })()),
+    ),
+    card(
+      "By time of day",
+      "Morning 6–12, day 12–19, night 19–6. The style switches by itself at those times.",
+      row("Follow the time of day", null, toggle(prefs.styleSchedule.enabled, "Time of day styles", (v) => {
+        savePrefs((x) => {
+          x.styleSchedule.enabled = v;
+          if (v) {
+            const h0 = new Date().getHours();
+            const slot = h0 >= 6 && h0 < 12 ? "morning" : h0 >= 12 && h0 < 19 ? "day" : "night";
+            if (x.styleSchedule[slot]) x.style.spec = styleFromNumber(x.styleSchedule[slot]);
+          }
+        });
+        renderPage(false);
+      })),
+      ...(["morning", "day", "night"] as const).map((slot) => {
+        const input = h("input", { class: "text-input style-go", type: "text", inputmode: "numeric", value: formatStyleNumber(prefs.styleSchedule[slot]), "aria-label": `${slot} style` }) as HTMLInputElement;
+        input.addEventListener("change", () => {
+          const n = Number(input.value.replace(/[#\s]/g, ""));
+          if (Number.isInteger(n) && n >= 0 && n < STYLE_COUNT) savePrefs((x) => (x.styleSchedule[slot] = n));
+          else input.value = formatStyleNumber(prefs.styleSchedule[slot]);
+        });
+        const useCurrent = btn("Use current", "ghost", () => {
+          if (num == null) return;
+          savePrefs((x) => (x.styleSchedule[slot] = num));
+          renderPage(false);
+        });
+        useCurrent.disabled = num == null;
+        return row(slot[0].toUpperCase() + slot.slice(1), themeInfo(styleFromNumber(prefs.styleSchedule[slot]).theme).name, input, useCurrent);
+      }),
+    ),
     card("Favourites", null, favs),
     card(
       "Credits",
       null,
       h("p", { class: "muted", text: "Palettes from tinted-theming/schemes (base16), MIT License, © 2022 Tinted Theming and each palette's author. Fonts are ones already installed on your system; nothing is downloaded." }),
+    ),
+  ];
+}
+
+// Desk & Mochi ────────────────────────────────────────────────────────────────
+
+function deskPage(): HTMLElement[] {
+  // Weather: only once the user picks a place (Open-Meteo, no key).
+  const placeInput = h("input", { class: "text-input", type: "search", placeholder: prefs.weather.name || "Search a city…", "aria-label": "Weather place" }) as HTMLInputElement;
+  const placeList = h("div", { class: "fav-list" });
+  const placeMsg = messageSlot();
+  let searchTimer: number | null = null;
+  placeInput.addEventListener("input", () => {
+    if (searchTimer != null) window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(async () => {
+      clear(placeList);
+      const q = placeInput.value.trim();
+      if (q.length < 2) return;
+      try {
+        for (const p of await Bridge.weatherPlaces(q)) {
+          const label = [p.name, p.admin, p.country].filter(Boolean).join(", ");
+          placeList.append(btn(label, "ghost", () => {
+            savePrefs((x) => (x.weather = { ...x.weather, enabled: true, name: p.name, lat: p.latitude, lon: p.longitude }));
+            renderPage(false);
+          }, LINE.globe));
+        }
+        if (!placeList.childElementCount) placeList.append(h("span", { class: "muted", text: "No place found." }));
+      } catch (err) {
+        placeMsg.show(notice("err", String((err as Error)?.message ?? err)));
+      }
+    }, 350);
+  });
+
+  const skins = radioChoices<Skin>(
+    SKINS.map((s) => ({ id: s.id, title: s.title, desc: "", extra: h("span", { class: "skin-preview", html: SKIN_SVG[s.id] || "" }) })),
+    () => prefs.mochi.skin,
+    (v) => savePrefs((p) => (p.mochi.skin = v)),
+    "choices skins",
+  );
+
+  const p = prefs.progress;
+  const level = levelOf(p.xp);
+  const badgeList = h(
+    "div",
+    { class: "badges" },
+    ...BADGES.map((b) => h("div", { class: p.badges.includes(b.id) ? "badge on" : "badge", title: b.desc }, ico(LINE.sparkle, 14, 2), h("b", { text: b.title }), h("span", { text: b.desc }))),
+  );
+
+  return [
+    card(
+      "Mochi",
+      `Level ${level} · ${p.xp} XP · ${p.sessions} sessions · ${p.badges.length} of ${BADGES.length} badges. Earned from real events only; it never changes what Coucou does.`,
+      badgeList,
+    ),
+    card("Outfit", "Drawn over Mochi; every animation stays the same.", skins),
+    card(
+      "Moods and fun",
+      null,
+      row("Celebrate", "Confetti and a proud Mochi when tests pass, a level is reached or a badge is earned.", toggle(prefs.mochi.celebrate, "Celebrate", (v) => savePrefs((x) => (x.mochi.celebrate = v)))),
+      row("Late-night nudge", "Once a night after 11 pm, a sleepy Mochi suggests a rest.", toggle(prefs.mochi.nightNudge, "Late-night nudge", (v) => savePrefs((x) => (x.mochi.nightNudge = v)))),
+      row("Animated texture", "Moves only while the island is open; off with reduced motion.", select(prefs.texture, TEXTURES.map((t) => [t.id, t.title] as [Texture, string]), "Animated texture", (v) => savePrefs((x) => (x.texture = v)))),
+    ),
+    card(
+      "Focus and the day",
+      null,
+      row("Focus length", null, slider(5, 90, 5, prefs.focus.workMin, (v) => `${v} min`, (v) => savePrefs((x) => (x.focus.workMin = v), true), "Focus length")),
+      row("Break length", null, slider(1, 30, 1, prefs.focus.breakMin, (v) => `${v} min`, (v) => savePrefs((x) => (x.focus.breakMin = v), true), "Break length")),
+      row("Daily recap", "A summary of the day — sessions, files, tests, decisions — written locally.", toggle(prefs.recap.enabled, "Daily recap", (v) => savePrefs((x) => (x.recap.enabled = v)))),
+      row("Recap time", null, slider(12, 23, 1, prefs.recap.hour, (v) => `${v}:00`, (v) => savePrefs((x) => (x.recap.hour = v), true), "Recap time")),
+      row("Reminders", prefs.reminders.length ? prefs.reminders.map((r) => `${new Date(r.at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })} ${r.text}`).join(" · ") : "Add them in the Desk (“20m stretch”) or with Ctrl+K → “remind 1h call Sam”.", h("span")),
+    ),
+    card(
+      "Clock and weather",
+      "Weather comes from Open-Meteo (no account, no key) and only once you choose a place. Coucou sends it the place's coordinates, nothing else.",
+      row("Clock in the compact island", "Shown when nothing else needs the space.", toggle(prefs.compactClock, "Clock", (v) => savePrefs((x) => (x.compactClock = v)))),
+      row("Weather", prefs.weather.name ? `For ${prefs.weather.name}.` : "Off — choose a place below.", toggle(prefs.weather.enabled, "Weather", (v) => {
+        if (v && !prefs.weather.name) return false;
+        savePrefs((x) => (x.weather.enabled = v));
+      })),
+      row("Units", null, select(prefs.weather.unit, [["c", "Celsius"], ["f", "Fahrenheit"]], "Units", (v) => savePrefs((x) => (x.weather.unit = v)))),
+      placeInput,
+      placeList,
+      placeMsg.el,
+    ),
+    card(
+      "Claude Code cost",
+      "Needs Coucou as Claude Code's status line (Settings → Claude Code). The alert fires once per session.",
+      row("Alert above", null, slider(0, 50, 0.5, prefs.costBudget, (v) => (v === 0 ? "Off" : `$${v.toFixed(2)}`), (v) => savePrefs((x) => (x.costBudget = v), true), "Cost alert")),
+    ),
+  ];
+}
+
+// Security center additions ──────────────────────────────────────────────────
+
+function guardCards(): HTMLElement[] {
+  const report = h("div", { class: "report" });
+  const drawReport = async () => {
+    clear(report);
+    if (!prefs.security.log) {
+      report.append(h("span", { class: "muted", text: "The log is off, so there's no report. Turn it on above to start one." }));
+      return;
+    }
+    try {
+      const r = await Guard.report(7);
+      report.append(
+        h("div", { class: "report-nums" },
+          ...(["critical", "high", "medium", "low"] as const).map((l) => h("div", { class: `rn ${l}` }, h("b", { text: String(r.byLevel[l] ?? 0) }), h("span", { text: l }))),
+          h("div", { class: "rn" }, h("b", { text: String(r.denied) }), h("span", { text: "denied" })),
+        ),
+        h("p", { class: "muted", text: r.topFlags.length ? `Most common: ${r.topFlags.map(([f, n]) => `${f} (${n})`).join(", ")}` : "No risky patterns this week." }),
+        ...r.risky.slice(0, 8).map((e) => h("div", { class: "grant" }, h("span", { class: `risk-dot ${e.level === "critical" ? "high" : e.level}` }), h("div", { class: "grant-text" }, h("b", { text: `${e.tool} · ${e.target.slice(0, 90)}` }), h("span", { text: `${e.project} · ${new Date(e.at).toLocaleString()} · ${e.decision}` })))),
+      );
+    } catch (err) {
+      report.append(notice("err", String((err as Error)?.message ?? err)));
+    }
+  };
+  void drawReport();
+  return [
+    card(
+      "Panic",
+      "Denies the request on screen and puts Coucou on hold: every new request goes back to the terminal, and automations stop, until you release it. Claude Code itself keeps running — stop it with Esc in the terminal.",
+      h("div", { class: "actions" },
+        btn("Panic now", "danger", () => void sendTo("island", "guard", "panic"), LINE.shield),
+        btn("Release hold", "secondary", () => void sendTo("island", "guard", "release"), LINE.shieldCheck),
+      ),
+    ),
+    card(
+      "Memory of your answers",
+      null,
+      row("Count answers", "Shows “Allowed 4× before” on a request. Stored only as a SHA-256 of the tool and target — the command isn't kept. Nothing is ever answered for you.", toggle(prefs.security.approvalCounts, "Count answers", (v) => savePrefs((x) => (x.security.approvalCounts = v)))),
+      row("Forget them", null, btn("Clear counts", "ghost", async () => {
+        if (await confirmDialog({ title: "Forget every count?", body: "Requests will show no history until you answer them again.", confirm: "Clear", danger: true })) await Guard.clear("counts");
+      }, LINE.trash)),
+    ),
+    card(
+      "Weekly security report",
+      "Off by default. When on, every permission request is written to a log on this computer (scrubbed of anything key-shaped, kept 90 days) so you can see the week's risky commands.",
+      row("Keep a security log", null, toggle(prefs.security.log, "Security log", (v) => {
+        savePrefs((x) => (x.security.log = v));
+        void drawReport();
+      })),
+      report,
+      h("div", { class: "actions" }, btn("Delete the log", "ghost", async () => {
+        if (await confirmDialog({ title: "Delete the security log?", body: "Every logged request is removed from this computer.", confirm: "Delete", danger: true })) {
+          await Guard.clear("log");
+          void drawReport();
+        }
+      }, LINE.trash)),
     ),
   ];
 }
@@ -1786,6 +2036,7 @@ const PAGES: Page[] = [
   { id: "modes", group: "Experience", title: "Modes", subtitle: "Focus, silent, presentation, night.", icon: LINE.moon, render: modesPage, status: () => (prefs.mode === "normal" ? null : true), keywords: "do not disturb dnd quiet focus presentation night" },
   { id: "appearance", group: "Experience", title: "Appearance", subtitle: "Glass, glow, particles, motion and the energy core.", icon: LINE.sparkle, render: appearancePage, keywords: "theme glass glow particles motion core animation startup" },
   { id: "styles", group: "Experience", title: "Styles", subtitle: "A million looks — palettes, accents, textures, fonts.", icon: LINE.sparkle, render: stylesPage, status: () => (prefs.style.spec ? true : null), keywords: "theme themes style colors colours palette skin look nord dracula catppuccin gruvbox tokyo night rose pine solarized monokai font texture random" },
+  { id: "desk", group: "Experience", title: "Desk & Mochi", subtitle: "Focus, the day, weather, Mochi's outfit, level and badges.", icon: LINE.power, render: deskPage, keywords: "pomodoro focus recap weather clock reminders outfit skin hat glasses level xp badges texture snow rain cost budget" },
   { id: "sound", group: "Experience", title: "Sound", subtitle: "What Mochi sounds like, and when.", icon: LINE.speaker, render: soundPage, status: () => (settings.soundEnabled ? null : false), keywords: "audio volume mute events" },
   { id: "display", group: "Experience", title: "Display", subtitle: "Which screen the island lives on.", icon: LINE.monitor, render: displayPage, keywords: "monitor screen dpi" },
   { id: "startup", group: "Experience", title: "Startup", subtitle: "When Coucou starts.", icon: LINE.power, render: startupPage, keywords: "autostart login boot" },
@@ -1946,6 +2197,7 @@ async function main() {
     "anthropic-api-key", "stripe-api-key", "github-token", "vercel-token",
     "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
     "webhook-1", "webhook-2", "webhook-3",
+    "sentry-org", "sentry-token", "linear-api-key", "jira-site", "jira-email", "jira-token",
   ];
   await Promise.all(keys.map(async (k) => {
     present[k] = (await Bridge.secretPresent(k)) ?? false;

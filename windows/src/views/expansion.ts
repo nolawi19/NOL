@@ -11,6 +11,12 @@ import { State, type TimelineCat, type TimelineEntry } from "../core/state";
 import { Bridge, IS_TAURI, sendTo } from "../core/bridge";
 import { Insight } from "../core/insight";
 import { MODES, MODE_ORDER } from "../core/prefs";
+import { Focus, parseReminder, Reminders } from "../core/schedule";
+import { Guard } from "../core/guard";
+import { Sessions } from "../core/sessions";
+import { Desk } from "../core/desk";
+import { styleFromWallpaper } from "../core/wallpaper";
+import { updatePrefs } from "../core/store";
 import { formatStyleNumber, numberOfStyle, randomStyleNumber, STYLE_COUNT, styleFromNumber, themeInfo } from "../core/styles";
 import { Session, WORK_MODE_LABEL, localSummary } from "../core/session";
 import { button, card, icon, setIcon } from "./ui";
@@ -82,10 +88,31 @@ function paletteCommands(actions: ViewActions, query = ""): PaletteCommand[] {
   if (State.pendingApproval) {
     add({ id: "approval", title: "Show the permission request", group: "Now", icon: LINE.shield, hint: State.pendingApproval.tool, run: () => actions.setView("approval") });
   }
+  // Typed shortcuts: "remind 20m stretch", "note buy milk".
+  const rem = /^remind(?:er)?\s+(.+)$/i.exec(query.trim());
+  if (rem) {
+    const r = parseReminder(rem[1]);
+    if (r) add({ id: "remind", title: `Remind me “${r.text}”`, group: "Reminder", icon: LINE.hourglass, keywords: query, hint: new Date(r.at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }), run: () => { Reminders.add(r.at, r.text); State.showFlash(`Reminder set · ${r.text}`, "#F5A524", "info", 3000, true); } });
+  }
+  const note = /^note\s+(.+)$/i.exec(query.trim());
+  if (note) {
+    add({ id: "note", title: `Save note “${note[1].slice(0, 40)}”`, group: "Memory", icon: LINE.compose, keywords: query, hint: State.prefs.memory.enabled ? "Memory" : "Turn on memory first", run: () => {
+      if (!State.prefs.memory.enabled) return actions.openSettingsPage("memory");
+      void actions.saveToMemory("note", note[1].slice(0, 60), note[1], null);
+    } });
+  }
+  if (Guard.hold) add({ id: "release", title: "Release hold", group: "Now", icon: LINE.shieldCheck, keywords: "panic hold", run: () => actions.releaseHold() });
+  else add({ id: "panic", title: "Panic: deny and hold every request", group: "Safety", icon: LINE.shield, keywords: "stop emergency hold deny", hint: "Requests go to the terminal", run: () => void actions.panic() });
+
   add({ id: "overview", title: "Overview", group: "Go to", icon: ICONS.house, keywords: "home sessions", run: () => actions.setView(State.defaultView()) });
   add({ id: "chat", title: "Ask Claude", group: "Go to", icon: LINE.compose, keywords: "chat prompt question", run: () => actions.setView("prompt") });
   add({ id: "center", title: "Command center", group: "Go to", icon: LINE.grid, keywords: "mission control dashboard system", run: () => actions.setView("center") });
   add({ id: "timeline", title: "Timeline", group: "Go to", icon: LINE.activity, keywords: "history events log activity", run: () => actions.setView("timeline") });
+  add({ id: "desk", title: "Desk", group: "Go to", icon: ICONS.timer, keywords: "focus pomodoro reminders music weather clock docker mochi", run: () => actions.setView("desk") });
+  add({ id: "sessions", title: "All sessions", group: "Go to", icon: LINE.terminal, keywords: "terminals projects cost", hint: Sessions.list.length ? `${Sessions.list.length} open` : undefined, run: () => actions.setView("sessions") });
+  add({ id: "tests", title: "Test runs", group: "Go to", icon: LINE.checkCircle, keywords: "tests dashboard pass fail", run: () => actions.setView("tests") });
+  add({ id: "replay", title: "Replay the session", group: "Go to", icon: LINE.activity, keywords: "replay history steps", run: () => actions.setView("replay") });
+  add({ id: "diff", title: "Show the last change", group: "Go to", icon: LINE.compose, keywords: "diff edit file preview", run: () => actions.openDiff() });
   add({ id: "drop", title: "Drop a file", group: "Go to", icon: LINE.upload, keywords: "upload attach", run: () => actions.setView("upload") });
   if (Insight.current.status !== "idle") {
     add({ id: "insight", title: "Last answer from Claude", group: "Go to", icon: LINE.sparkle, hint: Insight.current.title, run: () => actions.setView("insight") });
@@ -99,6 +126,15 @@ function paletteCommands(actions: ViewActions, query = ""): PaletteCommand[] {
   if (claude?.sessionCwd) {
     add({ id: "vscode", title: "Open the project in VS Code", group: "Claude Code", icon: LINE.external, hint: claude.name, run: () => actions.openTerminal() });
   }
+  add({ id: "clipboard", title: "Ask Claude about the clipboard", group: "Chat", icon: LINE.copy, keywords: "paste explain clipboard", run: () => void actions.askClipboard() });
+  add({ id: "next", title: "What should I do next?", group: "Claude Code", icon: LINE.sparkle, keywords: "suggest advice next step", hint: "Uses your API key", run: () => actions.whatNext() });
+  add({ id: "focus", title: Focus.phase ? "Stop the focus timer" : `Start a ${State.prefs.focus.workMin}-minute focus`, group: "Desk", icon: LINE.hourglass, keywords: "pomodoro focus timer", run: () => (Focus.phase ? Focus.stop() : Focus.start()) });
+  add({ id: "media", title: "Play / pause music", group: "Desk", icon: ICONS.speakerOn, keywords: "spotify music media pause play", run: () => void Desk.media_("toggle") });
+  add({ id: "media-next", title: "Next track", group: "Desk", icon: LINE.chevronRight, keywords: "spotify music skip", run: () => void Desk.media_("next") });
+  add({ id: "recap", title: "Today's recap", group: "Desk", icon: LINE.checkCircle, keywords: "daily summary day", run: () => { Desk.showRecap(); actions.setView("insight"); } });
+  add({ id: "feed", title: "Feed Mochi", group: "Mochi", icon: LINE.sparkle, keywords: "pet snack", run: () => actions.feed() });
+  add({ id: "pet", title: "Pet Mochi", group: "Mochi", icon: LINE.sparkle, keywords: "love", run: () => actions.pet() });
+  add({ id: "dance", title: "Make Mochi dance", group: "Mochi", icon: LINE.sparkle, keywords: "party fun", run: () => actions.dance() });
   if (State.chatHistory.length) add({ id: "new-chat", title: "New conversation", group: "Chat", icon: LINE.refresh, keywords: "reset clear chat", run: () => actions.newChat() });
 
   for (const m of MODE_ORDER) {
@@ -112,6 +148,17 @@ function paletteCommands(actions: ViewActions, query = ""): PaletteCommand[] {
     if (num != null) {
       add({ id: "style-next", title: "Next style", group: "Style", icon: LINE.chevronRight, keywords: "theme", hint: formatStyleNumber((num + 1) % STYLE_COUNT), run: () => actions.setStyle((num + 1) % STYLE_COUNT) });
     }
+    add({ id: "style-wallpaper", title: "Match my wallpaper", group: "Style", icon: LINE.screen, keywords: "theme colors desktop background", hint: "Reads the wallpaper on this computer", run: () => {
+      void styleFromWallpaper()
+        .then((spec) => {
+          updatePrefs((p) => (p.style.spec = spec));
+          State.showFlash(`Matched your wallpaper · ${themeInfo(spec.theme).name}`, "#A78BFA", "info", 3500, true);
+        })
+        .catch((err) => State.showFlash(String((err as Error)?.message ?? err), "#F4505E", "error", 4000, true));
+    } });
+    if (spec) add({ id: "style-copy", title: "Copy this style's number", group: "Style", icon: LINE.copy, keywords: "share", hint: num != null ? formatStyleNumber(num) : "custom styles have no number", run: () => {
+      if (num != null) void navigator.clipboard?.writeText(`Coucou style ${formatStyleNumber(num)}`);
+    } });
     if (spec) add({ id: "style-default", title: "Coucou's own style", group: "Style", icon: LINE.refresh, keywords: "theme reset default", run: () => actions.setStyle(null) });
   }
   add({ id: "sound", title: State.settings.soundEnabled ? "Mute sounds" : "Unmute sounds", group: "Island", icon: State.settings.soundEnabled ? ICONS.speakerOff : ICONS.speakerOn, keywords: "audio volume", run: () => actions.toggleSound() });
@@ -137,7 +184,8 @@ function paletteCommands(actions: ViewActions, query = ""): PaletteCommand[] {
     ["integrations", "Integrations", LINE.plug, "vercel github stripe n8n"],
     ["modes", "Modes", LINE.moon, "focus silent presentation night"],
     ["appearance", "Appearance", LINE.sparkle, "glass glow particles motion core"],
-    ["styles", "Styles", LINE.sparkle, "theme themes palette colors look"],
+    ["styles", "Styles", LINE.sparkle, "theme themes palette colors look wallpaper"],
+    ["desk", "Desk & Mochi", ICONS.timer, "focus weather reminders recap outfit skin texture budget cost"],
     ["sound", "Sounds", LINE.speaker, "audio events volume"],
     ["automations", "Automations", LINE.bolt, "rules triggers webhook"],
     ["memory", "Memory", LINE.folder, "notes summaries"],
@@ -283,14 +331,16 @@ function passes(e: TimelineEntry, filter: (typeof FILTERS)[number]["id"], q: str
   return `${e.text} ${e.detail ?? ""} ${e.project ?? ""}`.toLowerCase().includes(q);
 }
 
-function timelineRow(e: TimelineEntry): HTMLElement {
-  return h(
+function timelineRow(e: TimelineEntry, open?: (ref: string) => void): HTMLElement {
+  const row = h(
     "div",
-    { class: "tl-row", "data-tone": e.tone, style: `--c:${e.color}`, title: new Date(e.at).toLocaleString() },
+    { class: e.ref ? "tl-row has-ref" : "tl-row", "data-tone": e.tone, style: `--c:${e.color}`, title: e.ref ? "Show the change" : new Date(e.at).toLocaleString() },
     h("span", { class: "tl-icon" }, icon(e.icon, 10, 2.2)),
     h("span", { class: "tl-text" }, h("b", { text: e.text }), e.detail ? h("span", { text: e.detail }) : null),
     h("time", { class: "tl-ago", "data-at": String(e.at), text: ago(e.at) }),
   );
+  if (e.ref && open) row.addEventListener("click", () => open(e.ref!));
+  return row;
 }
 
 export function buildTimeline(actions: ViewActions): ViewHost {
@@ -353,7 +403,7 @@ export function buildTimeline(actions: ViewActions): ViewHost {
       return;
     }
     if (!grouped) {
-      for (const e of entries.slice(0, 120)) list.append(timelineRow(e));
+      for (const e of entries.slice(0, 120)) list.append(timelineRow(e, (r) => actions.openDiff(r)));
       return;
     }
     const groups = new Map<string, TimelineEntry[]>();
@@ -364,7 +414,7 @@ export function buildTimeline(actions: ViewActions): ViewHost {
     }
     for (const [name, items] of groups) {
       list.append(h("div", { class: "tlv-group" }, h("b", { text: name }), h("span", { text: `${items.length} event${items.length === 1 ? "" : "s"} · last ${ago(items[0].at)}` })));
-      for (const e of items.slice(0, 40)) list.append(timelineRow(e));
+      for (const e of items.slice(0, 40)) list.append(timelineRow(e, (r) => actions.openDiff(r)));
     }
   }
 
@@ -407,8 +457,22 @@ export function buildInsight(actions: ViewActions): ViewHost {
   const saveBtn = button("Save to memory", "secondary", () => void save(), { icon: LINE.folder });
   const settingsBtn = button("Open settings", "primary", () => actions.openSettingsPage("claude"), { icon: LINE.sliders });
   const backBtn = button("Back", "ghost", () => actions.setView(State.defaultView()), { icon: LINE.arrowLeft });
+  // Read aloud with the system's own voices (nothing leaves the computer).
+  const canSpeak = typeof window.speechSynthesis !== "undefined";
+  const speakBtn = button("Read aloud", "secondary", () => {
+    const synth = window.speechSynthesis;
+    if (synth.speaking) {
+      synth.cancel();
+      return;
+    }
+    const u = new SpeechSynthesisUtterance(Insight.current.text);
+    u.rate = 1.02;
+    u.onend = () => State.notify();
+    synth.speak(u);
+    State.notify();
+  }, { icon: LINE.speaker });
   const source = h("span", { class: "ins-source" });
-  const row = h("div", { class: "actions" }, copyBtn, saveBtn, settingsBtn, backBtn, h("span", { class: "grow" }), source);
+  const row = h("div", { class: "actions" }, copyBtn, speakBtn, saveBtn, settingsBtn, backBtn, h("span", { class: "grow" }), source);
   const shell = card("indigo", h("div", { class: "stack ins-stack" }, head, body, row));
   shell.style.setProperty("--accent", "#A78BFA");
   const el = h("div", { class: "view insight" }, shell);
@@ -448,6 +512,8 @@ export function buildInsight(actions: ViewActions): ViewHost {
       body.dataset.status = cur.status;
       const ready = cur.status === "ready";
       copyBtn.style.display = ready ? "" : "none";
+      speakBtn.style.display = ready && canSpeak ? "" : "none";
+      if (canSpeak) (speakBtn.querySelector(".btn-label") as HTMLElement).textContent = window.speechSynthesis.speaking ? "Stop" : "Read aloud";
       saveBtn.style.display = ready ? "" : "none";
       settingsBtn.style.display = cur.status === "error" && /key|settings|401|403/i.test(cur.text) ? "" : "none";
       (saveBtn.querySelector(".btn-label") as HTMLElement).textContent =

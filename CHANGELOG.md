@@ -2,6 +2,16 @@
 
 ## Unreleased — Windows and Linux
 
+- **Desk** (new tab, ⏱): clock and weather, focus timer, reminders, next Cal.com meeting, what's playing with play/pause/next, Mochi's level and pets, Docker containers, quick notes, today's numbers, recap and "What should I do next?"
+- **Change preview** — see exactly what an Edit or Write changed, line by line; click an edit in the timeline or replay
+- **Session replay**, **test dashboard** and **every session side by side**, with Claude Code's **cost** (through an optional status line) and a cost alert
+- **Panic button and hold** — deny the request on screen and send every new one to the terminal; "Allowed 4× before" on requests (hashed counts); an opt-in **weekly security report**
+- **Mochi**: 8 outfits, levels, XP and 13 badges, confetti when tests pass, a sleepy nudge late at night, feed / pet / dance, and you can drag it around
+- **Styles**: match your wallpaper, follow the time of day, copy a style's number to share; animated textures (stars, rain, snow, fireflies)
+- **Island position**: top left, centre or right
+- **Integrations**: GitHub Actions runs, Sentry, Linear, Jira
+- **Voice**: push to talk in the chat (Windows speech recognition), read Claude's answers aloud; ask Claude about the clipboard
+- Phone widget and watch approvals stay architecture-only: they need Coucou Mobile
 - **A million styles** — Settings → Styles: 1,000,000 numbered styles (#000000–#999999) out of 2,950,992 combinations of 253 dark palettes (the base16 collection by 148 authors, MIT) × accent × island body × font × texture × outline × colour × text contrast. Random, previous / next, go to a number, favourites, palette search and a builder; Ctrl+K → "Random style", "Next style" or type `#123456`. Every combination keeps text ≥ 7:1 and status colours ≥ 3:1 on the cards. With no style chosen, Coucou looks exactly as before
 - **Command palette** — Ctrl+K in the island, the 🔍 header button or tray → Command palette…: every action (views, modes, sound, collapse / hide, screen access, refresh an integration, summarise the session, settings pages) with fuzzy search and keyboard navigation
 - **Risk reading on permission requests** — a risk level next to the title and, under Details, what the command would do: deletions, git history rewrites, elevated privileges, network, piping downloads into a shell, deploys and publishes, secrets, system locations, paths outside the project, environment changes; the paths it names and whether it can be undone. "Explain" asks Claude (request text only, secrets scrubbed). Advisory only — nothing is ever approved for you

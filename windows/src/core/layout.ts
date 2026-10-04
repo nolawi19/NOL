@@ -27,7 +27,12 @@ export type IslandViewName =
   | "palette"
   | "timeline"
   | "insight"
-  | "boot";
+  | "boot"
+  | "desk"
+  | "diff"
+  | "replay"
+  | "tests"
+  | "sessions";
 
 export type BotStateName =
   | "idle"
@@ -108,6 +113,12 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   insight: { height: 236, botX: 62, botY: 108, botDiameter: 54, agentMode: "none" },
   // Startup check: Mochi wakes in the middle of the energy point.
   boot: { height: 176, botX: 112, botY: 108, botDiameter: 54, agentMode: "none" },
+  // Desk and the tool views: Mochi small in the corner, as in the center.
+  desk: { height: 288, botX: 46, botY: 64, botDiameter: 26, agentMode: "none" },
+  diff: { height: 288, botX: 46, botY: 64, botDiameter: 26, agentMode: "none" },
+  replay: { height: 288, botX: 46, botY: 64, botDiameter: 26, agentMode: "none" },
+  tests: { height: 288, botX: 46, botY: 64, botDiameter: 26, agentMode: "none" },
+  sessions: { height: 288, botX: 46, botY: 64, botDiameter: 26, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually

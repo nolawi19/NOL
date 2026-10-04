@@ -340,15 +340,15 @@ async fn poll_github(app: AppHandle) {
         let run_id = run.get("id").map(|x| x.to_string()).unwrap_or_default();
         let conclusion = s("conclusion");
         // One event per finished run, the first time it's seen finished.
-        if !conclusion.is_empty() && event.is_none() {
-            if is_new(&format!("gh-run-{full}"), &format!("{run_id}:{conclusion}")) {
-                let ok = conclusion == "success";
-                event = Some(IntegrationEvent {
-                    success: ok,
-                    label: if ok { "Workflow passed".into() } else { format!("Workflow {conclusion}") },
-                    detail: Some(format!("{} · {}", repo.get("name").and_then(Value::as_str).unwrap_or(full), s("name"))),
-                });
-            }
+        // Every finished run is marked seen; the first new one becomes the event.
+        let fresh = !conclusion.is_empty() && is_new(&format!("gh-run-{full}"), &format!("{run_id}:{conclusion}"));
+        if fresh && event.is_none() {
+            let ok = conclusion == "success";
+            event = Some(IntegrationEvent {
+                success: ok,
+                label: if ok { "Workflow passed".into() } else { format!("Workflow {conclusion}") },
+                detail: Some(format!("{} · {}", repo.get("name").and_then(Value::as_str).unwrap_or(full), s("name"))),
+            });
         }
         runs.push(json!({
             "repo": repo.get("name").and_then(Value::as_str).unwrap_or(full),

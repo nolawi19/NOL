@@ -45,6 +45,10 @@ export interface ApprovalInfo {
   risk: RiskReport | null;
   /** The folder the session runs in. */
   cwd: string | null;
+  /** How often this exact request was allowed / denied before (hashed). */
+  counts?: { allow: number; deny: number } | null;
+  /** Row in the security log, when it's on. */
+  logId?: number | null;
 }
 
 /** A short-lived line shown in the compact island ("Vercel · Deployment ready"). */
@@ -93,11 +97,15 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
   task("integration_notion", "Notion", "#8C8C8C", "n8n"),
   task("integration_calcom", "Cal.com", "#C9956A", "n8n"),
   task("integration_stripe", "Stripe", "#0570DE", "n8n"),
+  task("integration_sentry", "Sentry", "#A78BFA", "n8n"),
+  task("integration_linear", "Linear", "#5E6AD2", "n8n"),
+  task("integration_jira", "Jira", "#2684FF", "n8n"),
 ];
 
 export const TOGGLEABLE_INTEGRATION_IDS = [
   "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
   "integration_notion", "integration_calcom", "integration_stripe",
+  "integration_sentry", "integration_linear", "integration_jira",
 ];
 
 /** What an integration poller last reported. */
@@ -131,6 +139,8 @@ export interface Settings {
    * repairs anything missing or malformed.
    */
   prefs: unknown;
+  /** Where on the top edge the island sits. */
+  placement: "center" | "left" | "right";
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -147,6 +157,7 @@ export const DEFAULT_SETTINGS: Settings = {
   model: "claude-opus-5",
   onboarded: false,
   prefs: null,
+  placement: "center",
 };
 
 /** One line of the activity timeline (command center). */
@@ -164,6 +175,8 @@ export interface TimelineEntry {
   cat: TimelineCat;
   /** Project folder name, when the line belongs to a Claude Code session. */
   project?: string;
+  /** A tool record id (core/session.ts) — an edit whose change can be shown. */
+  ref?: string;
 }
 
 export type TimelineCat = "session" | "tool" | "permission" | "error" | "integration" | "chat" | "screen" | "automation";
@@ -231,6 +244,8 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
+  /** Text waiting to be put in the chat field (clipboard → Claude). */
+  chatDraft = "";
   /** Approval / question card showing the full text instead of two lines. */
   detailExpanded = false;
   flash: Flash | null = null;

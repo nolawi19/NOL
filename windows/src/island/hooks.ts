@@ -12,6 +12,10 @@ import { Automation } from "../core/automation";
 import { MODES } from "../core/prefs";
 import { analyzeRisk, RISK_LEVEL_LABEL } from "../core/risk";
 import { formatMs, Session } from "../core/session";
+import { formatCost, Sessions } from "../core/sessions";
+import { Guard, flagsOf } from "../core/guard";
+import { Progressor } from "../core/progress";
+import { Schedule } from "../core/schedule";
 import type { Island } from "./island";
 
 const CLAUDE_ID = "integration_claude";
@@ -35,6 +39,8 @@ interface HookPayload {
   tool_use_id?: string;
   /** PostToolUseFailure: what went wrong. */
   error?: unknown;
+  /** StatusLine (coucou-hook --statusline): cost and friends. */
+  cost_usd?: number;
 }
 
 /** Same rule as HookServer.validateAgent on macOS. "claude" is reserved. */
@@ -215,7 +221,31 @@ function handleHook(island: Island, payload: HookPayload) {
   const project = isExternalAgent ? validAgent! : projectName;
   /** Session tracking (durations, work mode, summaries) is for Claude Code. */
   const tracked = !isExternalAgent;
+  // The status line: numbers only, nothing else changes.
+  if (name === "StatusLine") {
+    const sid = payload.session_id ?? "";
+    if (!sid) return;
+    if (!Sessions.get(sid)) Sessions.touch(sid, projectName, cwd);
+    const live = Sessions.status(sid, payload as Record<string, unknown>);
+    const budget = State.prefs.costBudget;
+    if (live && budget > 0 && (live.cost ?? 0) >= budget && !live.budgetAlerted) {
+      live.budgetAlerted = true;
+      Sound.play("rate");
+      State.showFlash(`${live.project} passed ${formatCost(budget)} — now ${formatCost(live.cost)}`, "#F59E0B", "error", 8000, true);
+      State.log({ text: "Cost budget reached", detail: `${live.project} · ${formatCost(live.cost)}`, tone: "alert", icon: LINE.bolt, color: "#F59E0B", cat: "session", project: live.project });
+    }
+    State.notify();
+    return;
+  }
+
   if (tracked && name && name !== "SessionEnd") Session.begin(projectName, cwd || null);
+  // Every Claude Code session, side by side.
+  const live = tracked && payload.session_id && name !== "SessionEnd" ? Sessions.touch(payload.session_id, projectName, cwd) : null;
+  const liveState = (st: NonNullable<typeof live>["state"], step?: string) => {
+    if (!live) return;
+    live.state = st;
+    if (step) live.lastStep = step.slice(0, 80);
+  };
   const fire = (trigger: Parameters<typeof Automation.fire>[0], text: string, detail?: string, view?: Parameters<Island["alert"]>[0]) =>
     Automation.fire(trigger, { project, text, detail, view });
 
@@ -243,6 +273,8 @@ function handleHook(island: Island, payload: HookPayload) {
       const asked = payload.prompt ?? payload.message;
       if (asked) State.appendStep(agentId, asked.slice(0, 60));
       if (tracked) Session.prompted(asked ?? null);
+      liveState("thinking", asked ?? "Thinking");
+      Schedule.activity();
       State.log({ text: "Prompt", detail: asked?.slice(0, 120), tone: "active", icon: LINE.sparkle, color: STATE_COLOR.thinking, cat: "session", project });
       surface("overview", false);
       break;
@@ -259,8 +291,11 @@ function handleHook(island: Island, payload: HookPayload) {
       const tool = payload.tool_name ?? "Tool";
       const step = stepLabel(tool, payload.tool_input ?? {});
       State.appendStep(agentId, step);
-      if (tracked) Session.pre(tool, payload.tool_input ?? {}, payload.tool_use_id);
-      State.log({ text: step, tone: "active", icon: kindIcon(toolKind(tool)), color: STATE_COLOR.working, cat: "tool", project });
+      const rec = tracked ? Session.pre(tool, payload.tool_input ?? {}, payload.tool_use_id) : null;
+      liveState("working", step);
+      if (live) live.tools++;
+      // Edits keep a reference to their change: the timeline opens the diff.
+      State.log({ text: step, tone: "active", icon: kindIcon(toolKind(tool)), color: STATE_COLOR.working, cat: "tool", project, ref: rec?.change ? rec.id : undefined });
       surface("overview", false);
       break;
     }
@@ -274,7 +309,15 @@ function handleHook(island: Island, payload: HookPayload) {
         if (took >= 1000) {
           State.log({ text: `Done · ${rec.target.slice(0, 60)}`, detail: `${formatMs(took)} · exit OK`, tone: "success", icon: LINE.checkCircle, color: "#34D399", cat: "tool", project });
         }
-        if (rec.commandClass === "deploy") fire("deploy-command-succeeded", `Deploy command finished`, rec.target, "overview");
+        if (rec.commandClass === "deploy") {
+          fire("deploy-command-succeeded", `Deploy command finished`, rec.target, "overview");
+          Progressor.deploy();
+        }
+        if (rec.commandClass === "test") {
+          const previous = Session.tests[1];
+          Progressor.tests(true, previous ? !previous.ok : false);
+          island.celebrate("Tests passed");
+        }
       }
       break;
     }
@@ -288,6 +331,8 @@ function handleHook(island: Island, payload: HookPayload) {
       const took = rec?.end ? ` after ${formatMs(rec.end - rec.start)}` : "";
       State.log({ text: `Failed · ${what}`, detail: (rec?.error ?? "") + took || undefined, tone: "error", icon: LINE.xCircle, color: STATE_COLOR.error, cat: "error", project });
       fire("tool-failed", `${payload.tool_name ?? "Tool"} failed`, rec?.error ?? undefined, "overview");
+      if (live) live.failures++;
+      if (rec?.commandClass === "test") Progressor.tests(false, false);
       if (rec?.commandClass) {
         fire("command-failed", `Command failed: ${rec.target.slice(0, 80)}`, rec.error ?? undefined, "overview");
         if (rec.commandClass === "test") fire("tests-failed", "Tests failed", `${rec.target}\n${rec.error ?? ""}`.trim(), "overview");
@@ -307,13 +352,19 @@ function handleHook(island: Island, payload: HookPayload) {
         State.appendStep(agentId, message);
         State.log({ text: "Question", detail: message, tone: "alert", icon: LINE.ask, color: STATE_COLOR.question, cat: "session", project });
         fire("question-asked", "Claude is asking a question", message, "question");
+        liveState("question", message);
       }
       break;
     }
 
     case "Stop":
       State.updateTask(agentId, "finished");
-      if (tracked) Session.settle();
+      if (tracked) {
+        Session.settle();
+        const snap = Session.snapshot();
+        Progressor.sessionFinished({ tools: snap.tools, failures: snap.failed, files: snap.filesChanged.length });
+      }
+      liveState("finished", payload.message ?? "Finished");
       State.log({ text: "Finished", detail: payload.message?.slice(0, 120), tone: "success", icon: LINE.checkCircle, color: STATE_COLOR.finished, cat: "session", project });
       fire("session-finished", "Session finished", payload.message?.slice(0, 400), "finished");
       if (payload.message) State.appendStep(agentId, payload.message.slice(0, 60));
@@ -336,6 +387,7 @@ function handleHook(island: Island, payload: HookPayload) {
     case "StopFailure":
       State.updateTask(agentId, "error");
       if (tracked) Session.settle();
+      liveState("error", payload.message ?? "Stopped on an error");
       State.log({ text: "Stopped on an error", detail: payload.message?.slice(0, 120), tone: "error", icon: LINE.xCircle, color: STATE_COLOR.error, cat: "error", project });
       fire("session-failed", "Session stopped on an error", payload.message?.slice(0, 400), "error");
       Sound.play("error");
@@ -353,6 +405,7 @@ function handleHook(island: Island, payload: HookPayload) {
         State.updateTask(agentId, "idle");
         clearSession();
         Session.reset();
+        if (payload.session_id) Sessions.end(payload.session_id);
       }
       break;
 
@@ -374,6 +427,13 @@ function handleHook(island: Island, payload: HookPayload) {
       }
 
       const requestId = payload.request_id ?? "";
+      // On hold (panic button): every new request goes back to the terminal.
+      if (Guard.hold && requestId) {
+        void Bridge.approvalDecline(requestId);
+        State.log({ text: "Request sent to the terminal (on hold)", detail: `${payload.tool_name ?? "Tool"} · ${approvalTarget(payload.tool_input ?? {})}`.slice(0, 160), tone: "info", icon: LINE.shield, color: "#9AA3B2", cat: "permission", project });
+        State.showFlash("On hold — answer in the terminal", "#F4505E", "error", 4000, true);
+        break;
+      }
       // One card, one request. A second one must never quietly replace the first
       // — that would leave a human staring at request B while request A waits for
       // a decision nobody can give. Hand it straight back to the terminal.
@@ -420,6 +480,20 @@ function handleHook(island: Island, payload: HookPayload) {
       });
       // Automations may tell someone a request is waiting. None can answer it.
       fire("permission-requested", `Permission requested: ${tool}`, State.pendingApproval.command, "approval");
+      liveState("approval", State.pendingApproval.command);
+      {
+        const req = State.pendingApproval;
+        // "You allowed this 4× before" — counted by hash, never stored as text.
+        void Guard.countsFor(tool, target).then((c) => {
+          if (State.pendingApproval === req) {
+            req.counts = c ? { allow: c.allow, deny: c.deny } : null;
+            State.notify();
+          }
+        });
+        void Guard.log({ at: Date.now(), tool, target, level: risk?.level ?? "low", flags: flagsOf(risk), decision: "pending", project }).then((id) => {
+          req.logId = id;
+        });
+      }
       Sound.play("approval");
       if (focused) {
         island.alert("approval");
@@ -444,6 +518,7 @@ function handleHook(island: Island, payload: HookPayload) {
         State.appendStep(CLAUDE_ID, "Permission · answer in the terminal");
         State.setPillBadge(CLAUDE_ID, null);
         State.log({ text: "Permission expired", detail: expired.command, tone: "alert", icon: LINE.hourglass, color: "#F5A524", cat: "permission", project });
+        void Guard.setDecision(expired.logId ?? null, "terminal");
         if (State.view === "approval") island.setView(State.defaultView());
         State.notify();
       }, APPROVAL_TIMEOUT_MS);

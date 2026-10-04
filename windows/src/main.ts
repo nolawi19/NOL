@@ -99,6 +99,11 @@ async function main() {
   // A screenshot taken in Settings → Screen, attached to the chat.
   await onEvent<{ name: string; path: string }>("chat-attach", (f) => island.attachFile(f.name, f.path));
   await onEvent<null>("show-welcome", () => island.showWelcome());
+  // Settings → Security center: Panic / Release hold.
+  await onEvent<string>("guard", (what) => {
+    if (what === "panic") void island.actions.panic();
+    else if (what === "release") island.actions.releaseHold();
+  });
   // Settings → Security center asks for the permission history (it lives here).
   await onEvent<string>("timeline-query", (cat) => {
     void sendTo("settings", "timeline-snapshot", State.timeline.filter((e) => e.cat === cat).slice(0, 50));

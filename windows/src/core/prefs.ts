@@ -188,6 +188,68 @@ export interface WebhookMeta {
   kind: "ntfy" | "discord" | "slack" | "json";
 }
 
+// ── Desk, Mochi, progress ────────────────────────────────────────────────────
+
+export type Skin = "none" | "cap" | "glasses" | "crown" | "headphones" | "party" | "santa" | "bow" | "flower";
+export const SKINS: { id: Skin; title: string }[] = [
+  { id: "none", title: "Just Mochi" },
+  { id: "cap", title: "Cap" },
+  { id: "glasses", title: "Glasses" },
+  { id: "crown", title: "Crown" },
+  { id: "headphones", title: "Headphones" },
+  { id: "party", title: "Party hat" },
+  { id: "santa", title: "Winter hat" },
+  { id: "bow", title: "Bow" },
+  { id: "flower", title: "Flower" },
+];
+
+export type Texture = "off" | "stars" | "rain" | "snow" | "fireflies";
+export const TEXTURES: { id: Texture; title: string }[] = [
+  { id: "off", title: "Off" },
+  { id: "stars", title: "Twinkling stars" },
+  { id: "rain", title: "Rain" },
+  { id: "snow", title: "Snow" },
+  { id: "fireflies", title: "Fireflies" },
+];
+
+export interface Reminder {
+  id: string;
+  text: string;
+  /** Wall-clock ms. */
+  at: number;
+}
+
+export interface DayStats {
+  /** YYYY-MM-DD, local. */
+  date: string;
+  sessions: number;
+  tools: number;
+  failures: number;
+  files: number;
+  decisions: number;
+  testsPassed: number;
+  testsFailed: number;
+}
+
+export interface Progress {
+  xp: number;
+  sessions: number;
+  testsPassed: number;
+  deploys: number;
+  /** Local dates with at least one finished session, newest first (≤ 60). */
+  days: string[];
+  badges: string[];
+  today: DayStats;
+}
+
+export function todayKey(d = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+export function emptyDay(date = todayKey()): DayStats {
+  return { date, sessions: 0, tools: 0, failures: 0, files: 0, decisions: 0, testsPassed: 0, testsFailed: 0 };
+}
+
 // ── The whole thing ───────────────────────────────────────────────────────────
 
 export interface Prefs {
@@ -211,6 +273,27 @@ export interface Prefs {
   style: { spec: StyleSpec | null; favorites: number[] };
   /** Seconds of quiet before the energy core goes dormant. */
   dormantAfter: number;
+  /** Pomodoro lengths, minutes. */
+  focus: { workMin: number; breakMin: number };
+  reminders: Reminder[];
+  /** The day's recap, at `hour` (local). */
+  recap: { enabled: boolean; hour: number };
+  progress: Progress;
+  mochi: { skin: Skin; celebrate: boolean; nightNudge: boolean };
+  /** Style numbers for morning (6–12), day (12–19) and night (19–6). */
+  styleSchedule: { enabled: boolean; morning: number; day: number; night: number };
+  texture: Texture;
+  weather: { enabled: boolean; name: string; lat: number; lon: number; unit: "c" | "f" };
+  /** Clock (and weather) in the compact island when nothing else is shown. */
+  compactClock: boolean;
+  /** Alert when a Claude Code session's cost passes this many US dollars (0 = off). */
+  costBudget: number;
+  security: {
+    /** Keep a log of permission requests on this computer (weekly report). */
+    log: boolean;
+    /** Count approvals per request (hashed) to say "allowed 4× before". */
+    approvalCounts: boolean;
+  };
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -227,6 +310,17 @@ export const DEFAULT_PREFS: Prefs = {
   startup: { cinematic: true },
   style: { spec: null, favorites: [] },
   dormantAfter: 120,
+  focus: { workMin: 25, breakMin: 5 },
+  reminders: [],
+  recap: { enabled: false, hour: 18 },
+  progress: { xp: 0, sessions: 0, testsPassed: 0, deploys: 0, days: [], badges: [], today: emptyDay() },
+  mochi: { skin: "none", celebrate: true, nightNudge: true },
+  styleSchedule: { enabled: false, morning: 0, day: 0, night: 0 },
+  texture: "off",
+  weather: { enabled: false, name: "", lat: 0, lon: 0, unit: "c" },
+  compactClock: false,
+  costBudget: 0,
+  security: { log: false, approvalCounts: true },
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v != null && !Array.isArray(v);
@@ -269,6 +363,26 @@ function readRule(v: unknown): AutomationRule | null {
   };
 }
 
+function readProgress(v: unknown): Progress {
+  const p = isObj(v) ? v : {};
+  const t = isObj(p.today) ? p.today : {};
+  const n = (x: unknown) => Math.round(num(x, 0, 1e9, 0));
+  const date = typeof t.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(t.date) ? t.date : todayKey();
+  return {
+    xp: n(p.xp),
+    sessions: n(p.sessions),
+    testsPassed: n(p.testsPassed),
+    deploys: n(p.deploys),
+    days: Array.isArray(p.days) ? p.days.filter((x): x is string => typeof x === "string" && /^\d{4}-\d{2}-\d{2}$/.test(x)).slice(0, 60) : [],
+    badges: Array.isArray(p.badges) ? [...new Set(p.badges.filter((x): x is string => typeof x === "string" && x.length < 40))].slice(0, 60) : [],
+    today: {
+      date,
+      sessions: n(t.sessions), tools: n(t.tools), failures: n(t.failures), files: n(t.files),
+      decisions: n(t.decisions), testsPassed: n(t.testsPassed), testsFailed: n(t.testsFailed),
+    },
+  };
+}
+
 /** Always returns a complete, valid Prefs, whatever was stored. */
 export function readPrefs(raw: unknown): Prefs {
   const d = DEFAULT_PREFS;
@@ -278,6 +392,12 @@ export function readPrefs(raw: unknown): Prefs {
   const m = isObj(raw.memory) ? raw.memory : {};
   const st = isObj(raw.startup) ? raw.startup : {};
   const sty = isObj(raw.style) ? raw.style : {};
+  const fo = isObj(raw.focus) ? raw.focus : {};
+  const rc = isObj(raw.recap) ? raw.recap : {};
+  const mo = isObj(raw.mochi) ? raw.mochi : {};
+  const ss = isObj(raw.styleSchedule) ? raw.styleSchedule : {};
+  const we = isObj(raw.weather) ? raw.weather : {};
+  const se = isObj(raw.security) ? raw.security : {};
   const hooks = Array.isArray(raw.webhooks) ? raw.webhooks : [];
   return {
     v: 1,
@@ -310,6 +430,37 @@ export function readPrefs(raw: unknown): Prefs {
         : [],
     },
     dormantAfter: num(raw.dormantAfter, 30, 3600, d.dormantAfter),
+    focus: { workMin: num(fo.workMin, 5, 120, 25), breakMin: num(fo.breakMin, 1, 60, 5) },
+    reminders: Array.isArray(raw.reminders)
+      ? raw.reminders
+        .filter((r): r is Record<string, unknown> => isObj(r) && typeof r.at === "number" && typeof r.text === "string")
+        .map((r) => ({ id: str(r.id, 20) || newRuleId(), text: str(r.text, 140), at: r.at as number }))
+        .slice(0, 30)
+      : [],
+    recap: { enabled: bool(rc.enabled, false), hour: Math.round(num(rc.hour, 0, 23, 18)) },
+    progress: readProgress(raw.progress),
+    mochi: {
+      skin: oneOf(mo.skin, SKINS.map((k) => k.id), "none"),
+      celebrate: bool(mo.celebrate, true),
+      nightNudge: bool(mo.nightNudge, true),
+    },
+    styleSchedule: {
+      enabled: bool(ss.enabled, false),
+      morning: Math.round(num(ss.morning, 0, 999_999, 0)),
+      day: Math.round(num(ss.day, 0, 999_999, 0)),
+      night: Math.round(num(ss.night, 0, 999_999, 0)),
+    },
+    texture: oneOf(raw.texture, TEXTURES.map((t) => t.id), "off"),
+    weather: {
+      enabled: bool(we.enabled, false),
+      name: str(we.name, 80),
+      lat: num(we.lat, -90, 90, 0),
+      lon: num(we.lon, -180, 180, 0),
+      unit: oneOf(we.unit, ["c", "f"] as const, "c"),
+    },
+    compactClock: bool(raw.compactClock, false),
+    costBudget: num(raw.costBudget, 0, 10_000, 0),
+    security: { log: bool(se.log, false), approvalCounts: bool(se.approvalCounts, true) },
   };
 }
 

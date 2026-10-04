@@ -2335,3 +2335,133 @@ code.block {
   color: var(--ink-2);
   font: var(--fw-medium) var(--fs-sm) var(--mono);
 }
+
+/* Desk & Mochi */
+.choices.skins {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.choices.skins .choice {
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  padding: 10px;
+}
+
+.choices.skins .choice-text span {
+  display: none;
+}
+
+.choices.skins .radio {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+.skin-preview {
+  position: relative;
+  width: 64px;
+  height: 52px;
+}
+
+/* A little Mochi under each outfit. */
+.skin-preview::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 14px;
+  width: 44px;
+  height: 30px;
+  border-radius: 14px;
+  background: #f5f6f8;
+}
+
+.skin-preview svg {
+  position: absolute;
+  left: 10px;
+  top: 4px;
+  width: 44px;
+  height: 44px;
+  overflow: visible;
+}
+
+.badges {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.badge {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 11px;
+  border: 1px solid var(--line-2);
+  color: var(--ink-4);
+  opacity: 0.55;
+}
+
+.badge .ico {
+  grid-row: span 2;
+}
+
+.badge b {
+  font: var(--fw-semibold) var(--fs-sm) var(--font);
+}
+
+.badge span {
+  font-size: var(--fs-xs);
+}
+
+.badge.on {
+  opacity: 1;
+  color: var(--ink-2);
+  border-color: color-mix(in srgb, var(--c-approval) 45%, transparent);
+  background: color-mix(in srgb, var(--c-approval) 7%, transparent);
+}
+
+.badge.on .ico {
+  color: var(--c-approval);
+}
+
+/* Weekly report */
+.report {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.report-nums {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+
+.rn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: inset 0 0 0 1px var(--line-1);
+}
+
+.rn b {
+  font: var(--fw-bold) var(--fs-xl) var(--font);
+}
+
+.rn span {
+  color: var(--ink-4);
+  font-size: var(--fs-xs);
+  text-transform: capitalize;
+}
+
+.rn.critical b { color: var(--c-error); }
+.rn.high b { color: #fb7185; }
+.rn.medium b { color: var(--c-approval); }

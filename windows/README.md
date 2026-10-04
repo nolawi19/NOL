@@ -73,7 +73,10 @@ battery; the timeline keeps the last 200 events with filters and search. Modes
 automations (flash, sound, webhook to ntfy / Discord / Slack, Claude summary)
 and an opt-in memory live in Settings. Settings → Styles has a million
 numbered looks (#000000–#999999) built from 253 open-source palettes — or
-press Ctrl+K and type "Random style". The full map of what works and what
+press Ctrl+K and type "Random style". The ⏱ Desk tab has a focus timer, reminders,
+weather, what's playing, Docker, Mochi's level and a Panic button; the
+command palette also opens the change preview, session replay, test runs and
+every session side by side. The full map of what works and what
 each feature waits on is [`docs/FEATURES.md`](../docs/FEATURES.md).
 
 Settings → Screen can share a screen or window with Coucou — only after a
